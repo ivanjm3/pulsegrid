@@ -955,3 +955,143 @@
 - Manifest validation: valid JSON, all rendition IDs present, correct file sizes, RFC3339 timestamps
 - Interface-based mock pattern: same S3Downloader/S3OutputUploader/KafkaProducer interfaces used in production
 - Tests run in <1s without external dependencies (no Kafka broker, no S3, no ffmpeg needed for most tests)
+
+---
+
+## Unified Message Queue Abstraction (pkg/queue)
+
+### Interview Questions
+
+- Why create a separate `MessageQueue` interface when `KafkaProducer` already exists?
+- How does combining producer and consumer into one interface simplify worker code?
+- Why encapsulate retry logic inside the queue abstraction vs leaving it to callers?
+- How does a 30-minute session timeout prevent consumer group rebalancing during long transcodes?
+- Why use `FetchMessage` + explicit `CommitMessages` instead of auto-commit?
+- How does the Hash balancer ensure partition affinity by job_id?
+- Why set `MaxAttempts: 1` on the kafka.Writer when you have application-level retry?
+- How does the Config struct with `defaults()` pattern enable both production and test configurations?
+- Why return the raw kafka.Message inside the Message wrapper (needed for commit)?
+- How does interface-based design enable unit tests without a running Kafka broker?
+
+### Follow-up Questions
+
+- How would you add dead-letter handling for deserialization failures (malformed JSON)?
+- What happens if Commit fails — how do you prevent duplicate processing?
+- How would you implement batch consume (fetch N messages at once) for throughput?
+- When would you add circuit-breaking to the Publish path?
+- How does this abstraction interact with Kafka transactions (exactly-once)?
+- How would you add observability (publish latency histogram, consume lag gauge) inside the queue?
+- What's the tradeoff of one interface (MessageQueue) vs separate Producer/Consumer interfaces?
+- How would you test retry behavior without waiting for real backoff delays?
+- How does `RequireAll` acks affect publish latency under broker failover?
+- Could you swap Kafka for SQS behind this interface? What would break?
+
+### Resume Talking Points
+
+- Designed unified `MessageQueue` interface (Publish/Consume/Commit/SendDLQ) — single abstraction for all queue operations
+- Interface-first design enables zero-dependency unit testing via mock implementation
+- Encapsulated retry logic (exponential backoff via `RetryWithBackoff`), partition assignment (Hash by job_id), and consumer group management (30min session timeout)
+- Config struct with zero-value defaults pattern — production-ready out of the box, fully overridable for tests
+- Wraps `kafka.Message` in typed `Message` struct — deserializes on consume, preserves raw for commit
+- Same `segmentio/kafka-go` library as existing code — no new dependencies introduced
+
+---
+
+## Database Migrations (Embedded SQL, Auto-Run on Startup)
+
+### Interview Questions
+
+- Why embed migrations into the binary instead of reading from filesystem at runtime?
+- How does `embed.FS` work in Go and what are its constraints?
+- Why track applied migrations in a `schema_migrations` table vs using file timestamps?
+- Why run each migration in its own transaction?
+- What happens if a migration fails mid-way — how do you recover?
+- Why run migrations on application startup vs as a separate CLI command?
+- How does filename ordering (001_, 002_) guarantee execution sequence?
+
+### Follow-up Questions
+
+- How would you handle zero-downtime schema migrations (e.g., adding NOT NULL column)?
+- What's the risk of running migrations on multiple API pods simultaneously?
+- How would you add migration locking (advisory locks) to prevent concurrent execution?
+- How would you implement rollback/down migrations?
+- What happens if TimescaleDB's `create_hypertable` is not idempotent — how did you handle it?
+- How would you test migrations in CI without a running Postgres instance?
+- When would you choose golang-migrate or goose over a custom runner?
+
+### Resume Talking Points
+
+- Custom migration runner using Go 1.16+ `embed.FS` — migrations compiled into binary (no runtime file dependency)
+- `schema_migrations` table tracks applied versions — idempotent re-runs skip already-applied
+- Each migration runs in a transaction — partial failures roll back cleanly
+- No external migration tool dependency — stdlib + pgx only
+- Runs on API server startup — schema always up-to-date before serving traffic
+- TimescaleDB hypertable creation uses `if_not_exists => TRUE` for idempotency
+
+
+---
+
+## Requirements Mapping & Validation Audit
+
+### Interview Questions
+
+- How do you ensure every requirement has test coverage in a large system?
+- What's a requirements traceability matrix and why does it matter?
+- How do you identify "hanging code" (implemented but not integrated)?
+- How do you verify error path coverage systematically?
+- What's the difference between requirements coverage vs code coverage?
+- How do you handle requirements that map to infrastructure (Terraform, K8s) vs application code?
+
+### Follow-up Questions
+
+- How would you automate requirements validation in CI?
+- What tools exist for traceability (OpenReq, Jira links, custom scripts)?
+- How do you handle requirements that span multiple components?
+- What do you do when a gap is found mid-project — re-prioritize or defer?
+- How do you validate non-functional requirements (latency SLOs, scalability)?
+
+### Resume Talking Points
+
+- Mapped all 18 requirements (78 acceptance criteria) to implementing tasks
+- Verified all error paths handled with classification taxonomy (retryable/permanent/constraint)
+- Identified 2 functional gaps: worker→DB status sync, DLQ query endpoint — documented for follow-up
+- Confirmed zero hanging code: all components wired end-to-end (API↔S3↔Kafka↔Worker↔Prometheus)
+- Infrastructure requirements (Terraform, K8s, Grafana) tracked as planned tasks with clear dependency ordering
+
+
+---
+
+## Full End-to-End Integration Testing (API → Kafka → Worker → Status Query)
+
+### Interview Questions
+
+- Why create a separate integration test package instead of testing within cmd/api or cmd/worker?
+- How do you test two `package main` binaries together without starting real processes?
+- Why reimplement handler logic in the test vs importing from the main package?
+- How does the mock Kafka "bridge" the API and Worker flows in a single test?
+- Why verify the full state machine (submitted → processing → completed) vs just endpoints?
+- How do you validate Kafka message schema compliance without a real broker?
+- What's the difference between unit tests per component vs integration tests crossing boundaries?
+- Why test the failure path (→ DLQ) alongside the happy path?
+- How does interface-based DI enable wiring all mocks (S3, Kafka, DB) into a unified test?
+
+### Follow-up Questions
+
+- How would you add contract testing between API producer and Worker consumer (shared schema)?
+- When would you use testcontainers (real Kafka/Postgres) vs pure interface mocks?
+- How do you prevent integration test drift from production code (reimplemented handlers)?
+- How would you test concurrent job submissions in the integration test?
+- What are tradeoffs of httptest.NewServer (real HTTP) vs direct handler invocation?
+- How would you add timing assertions (latency SLOs) to integration tests?
+- How do you keep integration tests fast enough for CI (< 5 seconds)?
+- How would you test partial failures (S3 upload succeeds but DB commit fails)?
+
+### Resume Talking Points
+
+- Built full lifecycle integration test: upload → Kafka message → worker processing → status query
+- Verified all state transitions (submitted → processing → completed) and failure path (→ DLQ)
+- Mock bridge pattern: API writes to mock Kafka, test reads and feeds to simulated worker
+- Validated metrics emission at every stage (API counter + Worker histogram/counter)
+- Verified S3 output paths follow convention: `{jobID}/{rendition}/{filename}`
+- Zero external dependencies — runs in < 1 second with pure Go mocks
+- Separate test package avoids circular imports between two `package main` binaries

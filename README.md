@@ -10,6 +10,7 @@ pulsegrid/
 │   ├── api/         # API server entrypoint
 │   └── worker/      # Worker pod entrypoint
 ├── pkg/             # Shared types, errors, utilities
+│   └── queue/       # Unified Kafka producer+consumer abstraction
 ├── docs/            # Architecture, API docs, interview notes
 └── go.mod
 ```
@@ -53,4 +54,18 @@ go test ./...
 ```bash
 go run ./cmd/api/
 # Listening on :8080
+```
+
+## Database Migrations
+
+Migrations live in `db/migrations/` as numbered SQL files. They are embedded into the binary via `embed.FS` and run automatically on API server startup.
+
+- `001_create_jobs_table.sql` — jobs table with indexes
+- `002_create_job_status_events.sql` — TimescaleDB hypertable for status events
+
+Applied migrations tracked in `schema_migrations` table. Re-runs skip already-applied. Each migration executes in its own transaction.
+
+```bash
+# Migrations run automatically when DATABASE_URL is set:
+DATABASE_URL=postgres://user:pass@localhost:5432/pulsegrid go run ./cmd/api/
 ```

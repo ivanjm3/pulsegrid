@@ -253,6 +253,11 @@ Client → POST /videos/upload (multipart/form-data)
 | `KafkaClient.EnqueueJob` | Serializes Job to JSON, publishes to Kafka with retry |
 | `KafkaClient.SendDLQ` | Publishes failed job to dead-letter queue |
 | `pkg.RetryWithBackoff` | Generic exponential backoff retry utility |
+| `queue.NewKafkaQueue` | Creates unified MessageQueue (producer+consumer) with retry, partitioning, consumer group |
+| `KafkaQueue.Publish` | Publishes KafkaMessage to main topic with retry + Hash partition by job_id |
+| `KafkaQueue.Consume` | Fetches and deserializes next message from consumer group |
+| `KafkaQueue.Commit` | Commits consumer offset for processed message |
+| `KafkaQueue.SendDLQ` | Publishes to DLQ topic with failure metadata + retry |
 | `pkg.StartQueueDepthPoller` | Background goroutine polling Kafka for queue depth, updating Prometheus gauge |
 | `pkg.NewPostgresClient` | Creates pgxpool connection with retry on initial connect |
 | `PostgresClient.RecordJobMetadata` | INSERT job into jobs table |
@@ -296,6 +301,42 @@ Client → POST /videos/upload (multipart/form-data)
 - **Retry**: Exponential backoff (1s, 2s, 4s, 8s, 16s) — max 5 attempts
 - **Interface**: `KafkaProducer` interface allows nil/mock for local dev/testing
 - **Local dev**: If `KAFKA_BROKERS` not set, enqueue skipped
+
+### Unified Queue Abstraction (pkg/queue)
+
+A higher-level `MessageQueue` interface in `pkg/queue/kafka.go` unifies producer and consumer operations into a single mockable abstraction:
+
+**Interface:**
+```go
+type MessageQueue interface {
+    Publish(ctx context.Context, msg pkg.KafkaMessage) error
+    Consume(ctx context.Context) (*Message, error)
+    Commit(ctx context.Context, msg *Message) error
+    SendDLQ(ctx context.Context, msg pkg.KafkaMessage, reason string) error
+    Close() error
+}
+```
+
+**Key Types:**
+- `Message` — wraps `kafka.Message` with deserialized `pkg.KafkaMessage` payload
+- `Config` — all queue configuration (brokers, topics, groupID, timeouts, retry params)
+- `KafkaQueue` — concrete implementation using `segmentio/kafka-go`
+
+**Configuration (Config struct):**
+| Field | Default | Purpose |
+|-------|---------|---------|
+| SessionTimeout | 30 min | Prevents rebalance during long transcodes |
+| HeartbeatInterval | 3s | Consumer group heartbeat frequency |
+| MaxWait | 5s | Max poll wait for new messages |
+| RetryAttempts | 5 | Publish/DLQ retry attempts |
+| RetryBaseDelay | 1s | Exponential backoff base delay |
+
+**Design:**
+- Retry logic encapsulated via `pkg.RetryWithBackoff` (exponential backoff, 16s cap)
+- Partition assignment via Hash balancer on job_id key
+- Consumer group with 30min session timeout for long-running transcodes
+- `auto.offset.reset=earliest` (StartOffset: FirstOffset)
+- Interface-based — tests use mock implementation without Kafka broker
 
 ## Worker Error Classification & Retry/DLQ
 
@@ -406,3 +447,5 @@ Client → POST /videos/upload (multipart/form-data)
 - **Resource constraint → os.Exit(1)**: Let Kubernetes restart pod; Kafka rebalance redelivers unfinished job to healthy consumer
 - **DLQ includes pod_id**: Enables debugging which pod failed and correlating with pod logs/metrics
 - **Offset committed after DLQ/re-enqueue**: Prevents double-processing; original message consumed, new message in queue
+- **Unified MessageQueue interface**: Single abstraction for both produce and consume — simplifies worker code, enables full pipeline mocking in tests
+- **Config with defaults() pattern**: Zero-value fields get production defaults, explicit values preserved — ergonomic for both prod and test usage

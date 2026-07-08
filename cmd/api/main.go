@@ -15,7 +15,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"pulsegrid/db"
 	"pulsegrid/pkg"
+
+	"go.uber.org/zap"
 )
 
 // MaxUploadSize is 10GB file size limit (variable to allow test override).
@@ -69,12 +72,19 @@ func main() {
 
 	// Initialize Postgres client if DATABASE_URL configured (skip for local dev).
 	if os.Getenv("DATABASE_URL") != "" {
-		db, err := pkg.NewPostgresClient(context.Background())
+		pgClient, err := pkg.NewPostgresClient(context.Background())
 		if err != nil {
 			log.Fatalf("failed to connect to postgres: %v", err)
 		}
-		dbClient = db
+		dbClient = pgClient
 		log.Printf("Postgres client initialized")
+
+		// Run database migrations on startup.
+		zapLogger, _ := zap.NewProduction()
+		if err := db.RunMigrations(context.Background(), pgClient.Pool(), zapLogger); err != nil {
+			log.Fatalf("failed to run migrations: %v", err)
+		}
+		log.Printf("Database migrations applied")
 	} else {
 		log.Printf("Postgres not configured (no DATABASE_URL). Running in local mode.")
 	}

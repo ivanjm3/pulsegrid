@@ -293,7 +293,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Test manifest valid JSON and contains all files
   - Ask user if questions arise.
 
-- [ ] 23. Job Queue Contract: Kafka producer and consumer abstraction
+- [x] 23. Job Queue Contract: Kafka producer and consumer abstraction
   - Create pkg/queue/kafka.go with interface: `MessageQueue` (Publish, Consume, Commit, SendDLQ)
   - Implement with Kafka client
   - Encapsulate retry logic, partition assignment, consumer group
@@ -312,7 +312,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Tests in `pkg/retry_test.go` (success, retry, all-fail, context cancel, exponential verify, cap verify)
   - _Requirements: 1.6 (implicit), 11 (implicit)_
 
-- [~] 25. Database Migrations and Schema Setup
+- [x] 25. Database Migrations and Schema Setup
   - ~~Create migrations: `db/migrations/001_create_jobs_table.sql`, `002_create_job_status_events.sql`~~ ✓
   - Run migrations on startup (using migrate library) ← **NOT DONE**
   - ~~Create indexes: `jobs(status)`, `jobs(submission_time)`, `job_status_events(job_id, event_timestamp)`~~ ✓
@@ -325,13 +325,13 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Test indexes exist
   - Query test: insert job, query by id, verify result
 
-- [ ] 26. All Requirements Mapping and Validation
+- [x] 26. All Requirements Mapping and Validation
   - Verify each requirement has at least one task or test validating it
   - Ensure no hanging code: all components integrated
   - Check all error paths handled
   - _Requirements: All 1-18_
 
-- [ ] 27. Checkpoint - Full integration test
+- [x] 27. Checkpoint - Full integration test
   - Mock Kafka, S3, Postgres
   - API: POST /videos/upload → consume worker message → download → transcode → upload → query status
   - Verify end-to-end: job submitted → queued → processed → completed

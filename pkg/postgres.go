@@ -273,6 +273,11 @@ func (c *PostgresClient) Ping(ctx context.Context) error {
 	return c.pool.Ping(ctx)
 }
 
+// Pool returns the underlying pgxpool.Pool for direct access (e.g., migrations).
+func (c *PostgresClient) Pool() *pgxpool.Pool {
+	return c.pool
+}
+
 // Close closes the connection pool.
 func (c *PostgresClient) Close() {
 	c.pool.Close()
