@@ -146,7 +146,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Verify status query: job created → job queried → status correct
   - Ask user if questions arise.
 
-- [ ] 12. Worker Pod: Core job processing loop and Kafka consumer (correct Kafka semantics)
+- [x] 12. Worker Pod: Core job processing loop and Kafka consumer (correct Kafka semantics)
   - Create `cmd/worker/main.go`
   - Initialize Kafka consumer: topic `transcoding-jobs`, group `pulsegrid-workers`, auto.offset.reset=earliest
   - **Kafka semantics (NOT SQS)**: No message lock/visibility timeout. Consumer joins group, reads partition offsets.
@@ -164,7 +164,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Test offset committed only after successful process
   - Test crash without commit: offset not advanced, message re-delivered on rebalance
 
-- [ ] 13. Worker Pod: S3 source download and local staging
+- [x] 13. Worker Pod: S3 source download and local staging
   - Create function: `downloadSourceFromS3(ctx, jobID, s3URI) → /tmp/{jobID}/original.mp4`
   - Use S3 SDK, stream to disk (limit temp space to available disk)
   - Handle network errors: retry with backoff
@@ -178,7 +178,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Test 404 → permanent error (no retry)
   - Test out of disk space → return ResourceConstraintError
 
-- [ ] 14. Worker Pod: ffmpeg invocation for single rendition
+- [x] 14. Worker Pod: ffmpeg invocation for single rendition
   - Create function: `transcodeSingleRendition(ctx, sourceFile, rendition) → outputFile`
   - Build ffmpeg command: `-i input -c:v codec -b:v bitrate -s resolution ...`
   - Execute with timeout (30 min default), capture stdout/stderr
@@ -193,7 +193,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Test invalid codec → ffmpeg exits 1, error captured
   - Test timeout exceeded → process killed, error returned
 
-- [ ] 15. Worker Pod: HLS segment generation
+- [x] 15. Worker Pod: HLS segment generation
   - Create function: `transcodeHLS(ctx, sourceFile, rendition) → hls_dir`
   - Build ffmpeg command with HLS output flags: `-f hls -hls_time 6 playlist.m3u8`
   - Generate segments: segment-00000.ts, segment-00001.ts, ... playlist.m3u8
@@ -207,7 +207,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Verify playlist.m3u8 and .ts files created
   - Test segment count matches expected
 
-- [ ] 16. Worker Pod: Manifest generation
+- [x] 16. Worker Pod: Manifest generation
   - Create function: `generateManifest(ctx, job, results) → manifest.json`
   - Build JSON: job_id, source_file, output_files array (with paths, sizes, durations), generation_time, worker_pod_id (from HOSTNAME env), ffmpeg_version
   - Verify JSON valid, write to file: `{temp_dir}/manifest.json`
@@ -219,7 +219,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Generate random result sets (0-5 renditions), generate manifests
   - Verify valid JSON, all required fields present, generation_time ISO 8601
 
-- [ ] 17. Worker Pod: S3 output upload
+- [x] 17. Worker Pod: S3 output upload
   - Create function: `uploadOutputsToS3(ctx, jobID, results, manifestPath)`
   - Upload each file in results: `s3://pulsegrid-output/{jobID}/{rendition}/{filename}`
   - Upload manifest to: `s3://pulsegrid-output/{jobID}/manifest.json`
@@ -234,7 +234,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Test permanent error (403) → no retry
   - Test partial failure (1 file fails) → return error, roll back or cleanup
 
-- [ ] 18. Worker Pod: Job completion and retry/DLQ handling (with error classification)
+- [x] 18. Worker Pod: Job completion and retry/DLQ handling (with error classification)
   - **Error Classification** (before retry decision):
     - **Retryable** (transient): network timeout, S3 503/SlowDown, Kafka unavailable, temp disk full
     - **Permanent** (non-retryable): corrupted video file, unsupported codec, source file missing (404), invalid S3 path
@@ -256,7 +256,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Generate jobs with retry_count = 3, mock permanent error, verify DLQ message
   - Generate jobs with retry_count = 0, mock permanent error (e.g., unsupported codec), verify immediate DLQ (no retry)
 
-- [ ] 19. Worker Pod: Temporary file cleanup
+- [x] 19. Worker Pod: Temporary file cleanup
   - After job completes (success or failure): delete `/tmp/{jobID}` directory recursively
   - Log deletion result, handle permission errors gracefully
   - _Requirements: 3.6_
@@ -267,7 +267,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Create temp files in /tmp/{jobID}, process job, verify directory removed
   - Test both success and failure paths
 
-- [ ] 20. Worker Pod: Error logging with context
+- [x] 20. Worker Pod: Error logging with context
   - Implement structured JSON logging (zap or similar)
   - All error logs include: timestamp (ISO 8601), job_id, pod_id (HOSTNAME), error_message, event_type
   - Log failures with: ffmpeg_stderr (first 500 chars), retry_count, error_type
@@ -279,13 +279,13 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Simulate errors, capture logs, verify all required fields in output
   - Parse structured JSON logs
 
-- [ ] 21. Worker Pod: Prometheus metrics emission
+- [x] 21. Worker Pod: Prometheus metrics emission
   - Emit: `pulsegrid_transcode_duration_seconds` (histogram, labeled by rendition), `pulsegrid_transcode_failures_total` (counter, labeled by error_type), `pulsegrid_job_completed_total` (counter)
   - Emit pod metrics: `pulsegrid_pod_resource_constrained` on ResourceConstraintError
   - Expose /metrics endpoint on port 8081 (Prometheus format)
   - _Requirements: 8.3_
 
-- [ ] 22. Checkpoint - Worker Pod functional tests
+- [x] 22. Checkpoint - Worker Pod functional tests
   - End-to-end test: consume Kafka message → download source → transcode → upload → emit metrics → commit
   - Test all renditions produced correctly
   - Test S3 objects tagged and in correct paths

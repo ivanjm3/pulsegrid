@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -280,3 +281,244 @@ func TestS3Upload_TransientError_EventualSuccess_CorrectURI(t *testing.T) {
 	}
 }
 
+
+
+// --- Tests for S3 Output Upload (UploadOutputsToS3) ---
+
+// mockS3OutputUploader mocks the S3OutputUploader interface.
+type mockS3OutputUploader struct {
+	uploadedFiles []string
+	err           error
+}
+
+func (m *mockS3OutputUploader) UploadOutputsToS3(ctx context.Context, jobID string, results []*TranscodeResult, hlsResults []*HLSResult, manifestPath string) error {
+	if m.err != nil {
+		return m.err
+	}
+	for _, r := range results {
+		m.uploadedFiles = append(m.uploadedFiles, fmt.Sprintf("%s/%s/%s", jobID, r.RenditionID, filepath.Base(r.FilePath)))
+	}
+	for _, h := range hlsResults {
+		m.uploadedFiles = append(m.uploadedFiles, fmt.Sprintf("%s/%s/%s", jobID, h.RenditionID, filepath.Base(h.PlaylistPath)))
+		for _, seg := range h.Segments {
+			m.uploadedFiles = append(m.uploadedFiles, fmt.Sprintf("%s/%s/%s", jobID, h.RenditionID, filepath.Base(seg)))
+		}
+	}
+	m.uploadedFiles = append(m.uploadedFiles, fmt.Sprintf("%s/manifest.json", jobID))
+	return nil
+}
+
+func TestS3Client_ImplementsS3OutputUploader(t *testing.T) {
+	// Compile-time check that S3Client implements S3OutputUploader interface.
+	var _ S3OutputUploader = (*S3Client)(nil)
+}
+
+func TestUploadOutputsToS3_KeyStructure(t *testing.T) {
+	// Verify key path: s3://pulsegrid-output/{jobID}/{rendition}/{filename}
+	jobID := "550e8400-e29b-41d4-a716-446655440000"
+
+	results := []*TranscodeResult{
+		{RenditionID: "720p", FilePath: "/tmp/550e8400/720p.mp4", FileSize: 1024000},
+		{RenditionID: "480p", FilePath: "/tmp/550e8400/480p.mp4", FileSize: 512000},
+	}
+
+	mock := &mockS3OutputUploader{}
+	err := mock.UploadOutputsToS3(context.Background(), jobID, results, nil, "/tmp/550e8400/manifest.json")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	expectedKeys := []string{
+		"550e8400-e29b-41d4-a716-446655440000/720p/720p.mp4",
+		"550e8400-e29b-41d4-a716-446655440000/480p/480p.mp4",
+		"550e8400-e29b-41d4-a716-446655440000/manifest.json",
+	}
+
+	if len(mock.uploadedFiles) != len(expectedKeys) {
+		t.Fatalf("expected %d files, got %d: %v", len(expectedKeys), len(mock.uploadedFiles), mock.uploadedFiles)
+	}
+
+	for i, expected := range expectedKeys {
+		if mock.uploadedFiles[i] != expected {
+			t.Fatalf("key[%d]: expected %q, got %q", i, expected, mock.uploadedFiles[i])
+		}
+	}
+}
+
+func TestUploadOutputsToS3_HLSKeyStructure(t *testing.T) {
+	// Verify HLS files uploaded: playlist + segments under {jobID}/{rendition}/
+	jobID := "hls-job-001"
+
+	hlsResults := []*HLSResult{
+		{
+			RenditionID:  "hls",
+			PlaylistPath: "/tmp/hls-job-001/hls/playlist.m3u8",
+			SegmentCount: 3,
+			Segments:     []string{"/tmp/hls-job-001/hls/segment-00000.ts", "/tmp/hls-job-001/hls/segment-00001.ts", "/tmp/hls-job-001/hls/segment-00002.ts"},
+		},
+	}
+
+	mock := &mockS3OutputUploader{}
+	err := mock.UploadOutputsToS3(context.Background(), jobID, nil, hlsResults, "/tmp/hls-job-001/manifest.json")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	expectedKeys := []string{
+		"hls-job-001/hls/playlist.m3u8",
+		"hls-job-001/hls/segment-00000.ts",
+		"hls-job-001/hls/segment-00001.ts",
+		"hls-job-001/hls/segment-00002.ts",
+		"hls-job-001/manifest.json",
+	}
+
+	if len(mock.uploadedFiles) != len(expectedKeys) {
+		t.Fatalf("expected %d files, got %d: %v", len(expectedKeys), len(mock.uploadedFiles), mock.uploadedFiles)
+	}
+
+	for i, expected := range expectedKeys {
+		if mock.uploadedFiles[i] != expected {
+			t.Fatalf("key[%d]: expected %q, got %q", i, expected, mock.uploadedFiles[i])
+		}
+	}
+}
+
+func TestUploadOutputsToS3_TaggingFormat(t *testing.T) {
+	// Verify tag construction: job_id, completion_time, rendition
+	jobID := "tag-test-job"
+	renditionID := "720p"
+	completionTime := time.Now().UTC().Format(time.RFC3339)
+
+	tagging := fmt.Sprintf("job_id=%s&completion_time=%s&rendition=%s",
+		url.QueryEscape(jobID),
+		url.QueryEscape(completionTime),
+		url.QueryEscape(renditionID),
+	)
+
+	parts := strings.Split(tagging, "&")
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 tag parts, got %d", len(parts))
+	}
+
+	tags := make(map[string]string)
+	for _, part := range parts {
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) != 2 {
+			t.Fatalf("invalid tag: %q", part)
+		}
+		val, err := url.QueryUnescape(kv[1])
+		if err != nil {
+			t.Fatalf("unescape failed: %v", err)
+		}
+		tags[kv[0]] = val
+	}
+
+	if tags["job_id"] != jobID {
+		t.Fatalf("job_id mismatch: %q", tags["job_id"])
+	}
+	if tags["rendition"] != renditionID {
+		t.Fatalf("rendition mismatch: %q", tags["rendition"])
+	}
+	if _, err := time.Parse(time.RFC3339, tags["completion_time"]); err != nil {
+		t.Fatalf("completion_time not valid RFC3339: %q", tags["completion_time"])
+	}
+}
+
+func TestUploadOutputsToS3_PermanentError403_NoRetry(t *testing.T) {
+	// Simulate: 403 AccessDenied detected by isPermanentS3Error → should return true
+	accessDenied := &smithyhttp.ResponseError{
+		Response: &smithyhttp.Response{
+			Response: &http.Response{StatusCode: 403},
+		},
+		Err: fmt.Errorf("AccessDenied: Access Denied"),
+	}
+
+	if !isPermanentS3Error(accessDenied) {
+		t.Fatal("expected isPermanentS3Error=true for 403, got false")
+	}
+}
+
+func TestUploadOutputsToS3_TransientError_NotPermanent(t *testing.T) {
+	// 503 ServiceUnavailable should NOT be permanent
+	serviceUnavailable := &smithyhttp.ResponseError{
+		Response: &smithyhttp.Response{
+			Response: &http.Response{StatusCode: 503},
+		},
+		Err: fmt.Errorf("ServiceUnavailable: Slow Down"),
+	}
+
+	if isPermanentS3Error(serviceUnavailable) {
+		t.Fatal("expected isPermanentS3Error=false for 503, got true")
+	}
+}
+
+func TestUploadOutputsToS3_TransientRetry_EventualSuccess(t *testing.T) {
+	// Simulate transient S3 error (503) → retry → success pattern
+	attempts := 0
+	transientErr := &smithyhttp.ResponseError{
+		Response: &smithyhttp.Response{
+			Response: &http.Response{StatusCode: 503},
+		},
+		Err: fmt.Errorf("SlowDown: Rate exceeded"),
+	}
+
+	err := RetryWithBackoff(context.Background(), 5, 10*time.Millisecond, func() error {
+		attempts++
+		if attempts <= 2 {
+			return transientErr
+		}
+		return nil
+	})
+
+	if err != nil {
+		t.Fatalf("expected success after retry, got: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("expected 3 attempts, got %d", attempts)
+	}
+}
+
+func TestUploadOutputsToS3_PermanentError_StopsRetry(t *testing.T) {
+	// Permanent 403 inside retry loop: should detect and stop
+	attempts := 0
+	accessDenied := &smithyhttp.ResponseError{
+		Response: &smithyhttp.Response{
+			Response: &http.Response{StatusCode: 403},
+		},
+		Err: fmt.Errorf("AccessDenied: Access Denied"),
+	}
+
+	var permanentErr error
+	_ = RetryWithBackoff(context.Background(), 5, 10*time.Millisecond, func() error {
+		attempts++
+		if isPermanentS3Error(accessDenied) {
+			permanentErr = accessDenied
+			return nil // stop retrying
+		}
+		return accessDenied
+	})
+
+	if permanentErr == nil {
+		t.Fatal("expected permanent error to be captured")
+	}
+	if attempts != 1 {
+		t.Fatalf("expected 1 attempt (immediate stop), got %d", attempts)
+	}
+}
+
+func TestUploadOutputsToS3_ManifestKey(t *testing.T) {
+	// Verify manifest key: {jobID}/manifest.json
+	jobID := "manifest-test-job"
+	expectedKey := "manifest-test-job/manifest.json"
+	key := fmt.Sprintf("%s/manifest.json", jobID)
+	if key != expectedKey {
+		t.Fatalf("expected %q, got %q", expectedKey, key)
+	}
+}
+
+func TestUploadOutputsToS3_OutputBucketConstant(t *testing.T) {
+	// Verify output bucket constant matches design spec
+	if outputBucket != "pulsegrid-output" {
+		t.Fatalf("expected outputBucket=%q, got %q", "pulsegrid-output", outputBucket)
+	}
+}

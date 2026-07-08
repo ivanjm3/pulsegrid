@@ -377,7 +377,13 @@ type mockKafkaFailing struct {
 func (m *mockKafkaFailing) EnqueueJob(ctx context.Context, job pkg.Job) error {
 	return m.enqueueErr
 }
+func (m *mockKafkaFailing) ReenqueueWithRetry(ctx context.Context, msg pkg.KafkaMessage) error {
+	return nil
+}
 func (m *mockKafkaFailing) SendDLQ(ctx context.Context, job pkg.Job, reason string) error {
+	return nil
+}
+func (m *mockKafkaFailing) SendDLQFromMessage(ctx context.Context, msg pkg.KafkaMessage, reason string, podID string) error {
 	return nil
 }
 func (m *mockKafkaFailing) Ping(ctx context.Context) error { return m.enqueueErr }
@@ -387,7 +393,13 @@ func (m *mockKafkaFailing) Close() error { return nil }
 type mockKafkaSuccess struct{}
 
 func (m *mockKafkaSuccess) EnqueueJob(ctx context.Context, job pkg.Job) error { return nil }
+func (m *mockKafkaSuccess) ReenqueueWithRetry(ctx context.Context, msg pkg.KafkaMessage) error {
+	return nil
+}
 func (m *mockKafkaSuccess) SendDLQ(ctx context.Context, job pkg.Job, reason string) error {
+	return nil
+}
+func (m *mockKafkaSuccess) SendDLQFromMessage(ctx context.Context, msg pkg.KafkaMessage, reason string, podID string) error {
 	return nil
 }
 func (m *mockKafkaSuccess) Ping(ctx context.Context) error { return nil }
@@ -1162,7 +1174,13 @@ type mockKafkaHealth struct {
 }
 
 func (m *mockKafkaHealth) EnqueueJob(ctx context.Context, job pkg.Job) error { return nil }
+func (m *mockKafkaHealth) ReenqueueWithRetry(ctx context.Context, msg pkg.KafkaMessage) error {
+	return nil
+}
 func (m *mockKafkaHealth) SendDLQ(ctx context.Context, job pkg.Job, reason string) error {
+	return nil
+}
+func (m *mockKafkaHealth) SendDLQFromMessage(ctx context.Context, msg pkg.KafkaMessage, reason string, podID string) error {
 	return nil
 }
 func (m *mockKafkaHealth) Ping(ctx context.Context) error { return m.pingErr }
@@ -1412,9 +1430,15 @@ func (m *mockKafkaFull) EnqueueJob(ctx context.Context, job pkg.Job) error {
 	return nil
 }
 
+func (m *mockKafkaFull) ReenqueueWithRetry(ctx context.Context, msg pkg.KafkaMessage) error {
+	return nil
+}
 func (m *mockKafkaFull) SendDLQ(ctx context.Context, job pkg.Job, reason string) error { return nil }
-func (m *mockKafkaFull) Ping(ctx context.Context) error                                { return nil }
-func (m *mockKafkaFull) Close() error                                                  { return nil }
+func (m *mockKafkaFull) SendDLQFromMessage(ctx context.Context, msg pkg.KafkaMessage, reason string, podID string) error {
+	return nil
+}
+func (m *mockKafkaFull) Ping(ctx context.Context) error { return nil }
+func (m *mockKafkaFull) Close() error                   { return nil }
 
 // mockDBFull implements DBClient with in-memory storage for integration tests.
 type mockDBFull struct {

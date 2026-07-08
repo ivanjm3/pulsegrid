@@ -174,13 +174,22 @@ readinessProbe:
 
 Exposes Prometheus metrics in exposition format. Scraped by Prometheus at configured interval.
 
-**Metrics exposed:**
+**API Server Metrics (port 8080):**
 
 | Metric | Type | Description |
 |--------|------|-------------|
 | `pulsegrid_jobs_submitted_total` | counter | Total jobs successfully submitted (incremented on 202 response) |
 | `pulsegrid_upload_duration_seconds` | histogram | Duration of full upload flow (request start → 202 response) |
 | `pulsegrid_queue_depth_jobs` | gauge | Current number of jobs waiting in transcoding-jobs Kafka topic (updated every 30s) |
+
+**Worker Pod Metrics (port 8081):**
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pulsegrid_job_completed_total` | counter | — | Total jobs completed successfully |
+| `pulsegrid_transcode_failures_total` | counter | `error_type` (retryable\|permanent\|constraint) | Total transcode failures by category |
+| `pulsegrid_transcode_duration_seconds` | histogram | `rendition` | Transcode duration per rendition |
+| `pulsegrid_pod_resource_constrained` | counter | — | Total times pod exited due to resource constraint (OOM, disk full) |
 
 **Histogram Buckets**: 0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0 seconds
 
@@ -235,6 +244,11 @@ Client → POST /videos/upload (multipart/form-data)
 | `writeErrorWithRequestID` | Error response with known request ID |
 | `pkg.NewS3Client` | Creates S3Client with multipart upload manager |
 | `S3Client.UploadSourceToS3` | Streams file to S3 with tagging + retry |
+| `S3Client.DownloadSourceFromS3` | Downloads source video from S3 to local disk with retry; 404 → permanent error |
+| `S3Client.UploadOutputsToS3` | Uploads all transcoded outputs (MP4, HLS, manifest) to output bucket with tags + retry |
+| `ParseS3URI` | Extracts bucket and key from s3:// URI |
+| `TranscodeSingleRendition` | Invokes ffmpeg to produce single MP4 rendition from source |
+| `TranscodeHLS` | Invokes ffmpeg with HLS flags to produce playlist.m3u8 + segment-XXXXX.ts files |
 | `pkg.NewKafkaClient` | Creates KafkaClient with writers for main + DLQ topics |
 | `KafkaClient.EnqueueJob` | Serializes Job to JSON, publishes to Kafka with retry |
 | `KafkaClient.SendDLQ` | Publishes failed job to dead-letter queue |
@@ -251,13 +265,26 @@ Client → POST /videos/upload (multipart/form-data)
 
 ## S3 Integration
 
-- **Bucket**: `pulsegrid-source` (configurable via `PULSEGRID_SOURCE_BUCKET` env var)
-- **Key pattern**: `{jobID}/original.mp4`
+- **Source Bucket**: `pulsegrid-source` (configurable via `PULSEGRID_SOURCE_BUCKET` env var)
+- **Output Bucket**: `pulsegrid-output`
+- **Source Key pattern**: `{jobID}/original.mp4`
+- **Output Key pattern**: `{jobID}/{rendition}/{filename}` (e.g. `{jobID}/720p/720p.mp4`)
+- **Manifest Key**: `{jobID}/manifest.json`
 - **Upload method**: AWS SDK v2 `s3/manager.Uploader` (multipart, 10MB parts, 5 concurrent)
-- **Object tags**: `job_id`, `upload_time` (ISO 8601), `source_name`
-- **Retry**: Exponential backoff (1s, 2s, 4s, 8s, 16s) — max 5 attempts
-- **Interface**: `S3Uploader` interface allows nil/mock for local dev/testing
-- **Local dev**: If `AWS_REGION` not set, S3 upload skipped (synthetic URI returned)
+- **Download method**: AWS SDK v2 `s3.GetObject` → stream to `/tmp/{jobID}/original.mp4`
+  - Retry: Exponential backoff (1s, 2s, 4s, 8s, 16s) — max 5 attempts
+  - 404 (NoSuchKey): Permanent failure, no retry → `*SourceNotFoundError`
+  - Logs download size and elapsed time on success
+- **Output Upload**: `UploadOutputsToS3(ctx, jobID, results, hlsResults, manifestPath)`
+  - Uploads MP4 renditions, HLS playlist + segments, and manifest.json
+  - Tags: `job_id`, `completion_time` (ISO 8601), `rendition`
+  - Retry: Exponential backoff (1s, 2s, 4s, 8s, 16s) — max 5 attempts
+  - Permanent error (403 AccessDenied): Returns immediately, no retry
+  - Transient error (503, network): Retries with backoff
+- **Source Object tags**: `job_id`, `upload_time` (ISO 8601), `source_name`
+- **Output Object tags**: `job_id`, `completion_time` (ISO 8601), `rendition`
+- **Interface**: `S3Uploader` (uploads), `S3Downloader` (downloads), `S3OutputUploader` (output upload) — nil/mock for local dev/testing
+- **Local dev**: If `AWS_REGION` not set, S3 upload/download skipped (synthetic URI returned / download skipped)
 
 ## Kafka Integration
 
@@ -269,6 +296,50 @@ Client → POST /videos/upload (multipart/form-data)
 - **Retry**: Exponential backoff (1s, 2s, 4s, 8s, 16s) — max 5 attempts
 - **Interface**: `KafkaProducer` interface allows nil/mock for local dev/testing
 - **Local dev**: If `KAFKA_BROKERS` not set, enqueue skipped
+
+## Worker Error Classification & Retry/DLQ
+
+**Error Types:**
+
+| Category | Examples | Action |
+|----------|----------|--------|
+| **Retryable** (transient) | Network timeout, S3 503/SlowDown, Kafka unavailable, temp disk full | Re-enqueue with retry_count+1 if < 3; else DLQ |
+| **Permanent** (non-retryable) | Corrupted video, unsupported codec, source 404, invalid S3 path | Send to DLQ immediately |
+| **Resource constraint** (pod-fatal) | Out of disk, OOM | Exit pod via `os.Exit(1)` |
+
+**Classification Logic (`pkg.ClassifyError`):**
+1. Check typed errors via `errors.As`: `ResourceConstraintError` → constraint, `SourceNotFoundError` → permanent, `PermanentError` → permanent
+2. Fallback to string pattern matching on error message (case-insensitive)
+3. Default: retryable (safest assumption for unknown errors)
+
+**Retry Flow:**
+- Retryable error + retry_count < 3: Increment count, publish updated message to `transcoding-jobs`
+- Retryable error + retry_count >= 3: Publish to `transcoding-dlq`
+- Permanent error: Publish to `transcoding-dlq` immediately (no retry)
+- Resource constraint: `os.Exit(1)` — Kubernetes restarts pod, Kafka rebalances, message redelivered
+
+**DLQ Message Format:**
+```json
+{
+  "job_id": "uuid",
+  "source_s3_uri": "s3://...",
+  "retry_count": 3,
+  "dlq_entry_timestamp": "2024-01-15T10:45:00Z",
+  "failure_reason": "ffmpeg: unsupported codec VP9",
+  "failure_timestamp": "2024-01-15T10:45:00Z",
+  "pod_id": "worker-pod-abc123"
+}
+```
+
+**Key Functions:**
+
+| Function | Purpose |
+|----------|---------|
+| `pkg.ClassifyError` | Determines error category (retryable/permanent/constraint) |
+| `handleJobOutcome` | Routes job result to success/retry/DLQ/exit path |
+| `KafkaClient.ReenqueueWithRetry` | Re-publishes message to main topic with updated retry_count |
+| `KafkaClient.SendDLQFromMessage` | Publishes KafkaMessage to DLQ with failure metadata + pod_id |
+| `pkg.NewWorkerMetrics` | Registers worker Prometheus metrics (completed, failure, duration) |
 
 ## Postgres Integration
 
@@ -329,3 +400,9 @@ Client → POST /videos/upload (multipart/form-data)
 - **pgxpool over database/sql**: Native Postgres wire protocol, connection pooling, no ORM overhead
 - **TimescaleDB hypertable**: job_status_events is time-series data — hypertable enables efficient range queries
 - **Status event best-effort**: Event insert failure doesn't fail the request (job metadata already saved)
+- **Three-tier error classification**: retryable (re-enqueue), permanent (DLQ), constraint (pod exit) — enables precise retry semantics
+- **Error classification via `errors.As` + string patterns**: typed errors matched first, fallback to message pattern matching for untyped errors
+- **Re-enqueue to same topic**: Simpler than Kafka retry topics; retry_count in message body tracks attempts
+- **Resource constraint → os.Exit(1)**: Let Kubernetes restart pod; Kafka rebalance redelivers unfinished job to healthy consumer
+- **DLQ includes pod_id**: Enables debugging which pod failed and correlating with pod logs/metrics
+- **Offset committed after DLQ/re-enqueue**: Prevents double-processing; original message consumed, new message in queue

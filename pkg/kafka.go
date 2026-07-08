@@ -14,7 +14,9 @@ import (
 // Allows mocking in tests and nil-check for local dev.
 type KafkaProducer interface {
 	EnqueueJob(ctx context.Context, job Job) error
+	ReenqueueWithRetry(ctx context.Context, msg KafkaMessage) error
 	SendDLQ(ctx context.Context, job Job, reason string) error
+	SendDLQFromMessage(ctx context.Context, msg KafkaMessage, reason string, podID string) error
 	Ping(ctx context.Context) error
 	Close() error
 }
@@ -38,6 +40,7 @@ type DLQMessage struct {
 	DLQEntryTimestamp string `json:"dlq_entry_timestamp"`
 	FailureReason     string `json:"failure_reason"`
 	FailureTimestamp  string `json:"failure_timestamp"`
+	PodID             string `json:"pod_id"`
 }
 
 // KafkaClient implements KafkaProducer using segmentio/kafka-go.
@@ -115,19 +118,20 @@ func (c *KafkaClient) SendDLQ(ctx context.Context, job Job, reason string) error
 
 	dlqMsg := DLQMessage{
 		KafkaMessage: KafkaMessage{
-			JobID:                  job.JobID,
-			SourceS3URI:            job.SourceS3URI,
-			SourceFileSizeBytes:    job.SourceFileSizeBytes,
-			Renditions:             job.Renditions,
-			OutputS3Prefix:         job.OutputS3Prefix,
-			RetryCount:             job.RetryCount,
-			MaxRetries:             job.MaxRetries,
-			SubmittedTimestamp:     job.SubmissionTime.UTC().Format(time.RFC3339Nano),
-			VisibilityTimeoutSecs:  job.VisibilityTimeoutSecs,
+			JobID:                 job.JobID,
+			SourceS3URI:           job.SourceS3URI,
+			SourceFileSizeBytes:   job.SourceFileSizeBytes,
+			Renditions:            job.Renditions,
+			OutputS3Prefix:        job.OutputS3Prefix,
+			RetryCount:            job.RetryCount,
+			MaxRetries:            job.MaxRetries,
+			SubmittedTimestamp:    job.SubmissionTime.UTC().Format(time.RFC3339Nano),
+			VisibilityTimeoutSecs: job.VisibilityTimeoutSecs,
 		},
 		DLQEntryTimestamp: now,
 		FailureReason:     reason,
 		FailureTimestamp:  now,
+		PodID:             "",
 	}
 
 	value, err := json.Marshal(dlqMsg)
@@ -144,6 +148,60 @@ func (c *KafkaClient) SendDLQ(ctx context.Context, job Job, reason string) error
 
 	if err != nil {
 		return fmt.Errorf("kafka dlq send failed for job %s: %w", job.JobID, err)
+	}
+
+	return nil
+}
+
+// ReenqueueWithRetry publishes a KafkaMessage back to main topic with updated retry_count.
+// Used when retryable error occurs and retry_count < max.
+func (c *KafkaClient) ReenqueueWithRetry(ctx context.Context, msg KafkaMessage) error {
+	value, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("kafka reenqueue marshal failed for job %s: %w", msg.JobID, err)
+	}
+
+	err = RetryWithBackoff(ctx, 5, 1*time.Second, func() error {
+		return c.writer.WriteMessages(ctx, kafka.Message{
+			Key:   []byte(msg.JobID),
+			Value: value,
+		})
+	})
+
+	if err != nil {
+		return fmt.Errorf("kafka reenqueue failed for job %s: %w", msg.JobID, err)
+	}
+
+	return nil
+}
+
+// SendDLQFromMessage publishes a KafkaMessage to DLQ topic with failure metadata.
+// Used by worker when processing fails permanently or max retries exceeded.
+func (c *KafkaClient) SendDLQFromMessage(ctx context.Context, msg KafkaMessage, reason string, podID string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	dlqMsg := DLQMessage{
+		KafkaMessage:      msg,
+		DLQEntryTimestamp: now,
+		FailureReason:     reason,
+		FailureTimestamp:  now,
+		PodID:             podID,
+	}
+
+	value, err := json.Marshal(dlqMsg)
+	if err != nil {
+		return fmt.Errorf("kafka dlq marshal failed for job %s: %w", msg.JobID, err)
+	}
+
+	err = RetryWithBackoff(ctx, 5, 1*time.Second, func() error {
+		return c.dlqWriter.WriteMessages(ctx, kafka.Message{
+			Key:   []byte(msg.JobID),
+			Value: value,
+		})
+	})
+
+	if err != nil {
+		return fmt.Errorf("kafka dlq send failed for job %s: %w", msg.JobID, err)
 	}
 
 	return nil
