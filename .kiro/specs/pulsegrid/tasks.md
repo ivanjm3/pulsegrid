@@ -19,7 +19,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Generate 100+ random upload contexts, verify all Job IDs unique and RFC 4122 v4 format
   - Use `quick.Check` or `gopter` for property generation
 
-- [ ] 2. API Server: HTTP server and request parsing
+- [x] 2. API Server: HTTP server and request parsing
   - Create `cmd/api/main.go` with HTTP server on port 8080
   - Implement multipart/form-data parsing for POST `/videos/upload`
   - Extract: video file, source_name, renditions JSON
@@ -27,13 +27,13 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Return 400/413 errors with structured error responses
   - _Requirements: 1.1, 1.2, 1.3_
 
-- [ ]* 2.1 Write unit tests for HTTP request validation
+- [x] 2.1 Write unit tests for HTTP request validation
   - Test valid multipart request with required fields
   - Test missing source_name field → 400 Bad Request
   - Test file exceeds 10GB → 413 Payload Too Large
   - Test invalid rendition JSON → 400 Bad Request
 
-- [ ] 3. API Server: S3 integration for source upload
+- [x] 3. API Server: S3 integration for source upload
   - Implement S3 client (AWS SDK v2 Go)
   - Create function: `uploadSourceToS3(ctx, file, jobID)` → s3://pulsegrid-source/{jobID}/original.mp4
   - Implement multipart S3 upload (no local disk buffering)
@@ -41,13 +41,13 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Handle S3 errors with exponential backoff (1s, 2s, 4s, 8s, 16s max 5 attempts)
   - _Requirements: 1.5, 1.6_
 
-- [ ]* 3.1 Write unit tests for S3 upload
+- [x] 3.1 Write unit tests for S3 upload
   - Mock S3 client (use `aws/smithy-go` test utilities)
   - Test successful upload with correct tagging
   - Test S3 transient error → retry with backoff
   - Test S3 permanent error (AccessDenied) → return 500
 
-- [ ] 4. API Server: Kafka job queue integration
+- [x] 4. API Server: Kafka job queue integration
   - Implement Kafka producer (segment go library)
   - Create function: `enqueueJob(ctx, job)` → publishes to topic `transcoding-jobs`
   - Message schema: Job_ID, source_s3_uri, renditions, output_s3_prefix, retry_count, timestamps
@@ -55,14 +55,14 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Handle Kafka errors with retry (same backoff as S3)
   - _Requirements: 2.1, 1.6_
 
-- [ ]* 4.1 Write property test for Kafka message schema
+- [x] 4.1 Write property test for Kafka message schema
   - **Property 2: Kafka Job Message Schema Compliance**
   - **Validates: Requirements 2.1, 1.6**
   - Generate random rendition specs (0-5 renditions, varied codecs/bitrates)
   - Publish to Kafka, consume, verify JSON structure and required fields
   - Verify no missing fields, correct types
 
-- [ ] 5. API Server: Postgres integration for job tracking
+- [x] 5. API Server: Postgres integration for job tracking
   - Create database connection pool (pgx driver)
   - Create database schema: `jobs` and `job_status_events` tables (from design)
   - Implement function: `recordJobMetadata(ctx, job)` → INSERT into jobs table
@@ -70,14 +70,14 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Handle connection errors, retry pool
   - _Requirements: 5.1, 5.2_
 
-- [ ]* 5.1 Write property test for database round-trip
+- [x] 5.1 Write property test for database round-trip
   - **Property 7: Database Persistence and Round-Trip**
   - **Validates: Requirements 5.1, 5.5**
   - Generate random jobs, insert via `recordJobMetadata`, query by job_id
   - Verify returned record matches all input fields (job_id, status, submission_time, renditions)
   - Test with 50+ random jobs
 
-- [ ] 6. API Server: Complete /videos/upload endpoint (atomic DB-Kafka ordering)
+- [x] 6. API Server: Complete /videos/upload endpoint (atomic DB-Kafka ordering)
   - **CRITICAL: Write order to prevent orphans**
     1. Begin DB transaction: INSERT into jobs table with status='submitting'
     2. Publish to Kafka (outside tx, will see submitting status if query before Kafka commit)
@@ -108,7 +108,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Test nonexistent job → 404 Not Found
   - Test failed job → returns status, failure_reason
 
-- [ ] 8. API Server: GET /jobs range query endpoint
+- [x] 8. API Server: GET /jobs range query endpoint
   - Implement query: `/jobs?submitted_after=<ts>&submitted_before=<ts>&status=<list>&limit=<n>&offset=<m>`
   - Parse timestamps (ISO 8601), validate ranges
   - Query Postgres for jobs matching filters
@@ -127,20 +127,20 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Mock Prometheus registry, emit events, verify counters incremented
   - Verify histogram buckets correct (upload_duration_seconds)
 
-- [ ] 9.2. API Server: Queue depth gauge (moved to wave 4, after task 12)
+- [~] 9.2. API Server: Queue depth gauge (moved to wave 4, after task 12)
   - Query Kafka admin API (not consumer lag): list partitions, fetch offsets
   - Calculate queue_depth = sum of partition lags across `transcoding-jobs` topic
   - Update `pulsegrid_queue_depth_jobs` gauge every 30s
   - _Requirements: 8.2 (deferred)_
 
-- [ ] 10. API Server: Health checks and liveness/readiness
+- [~] 10. API Server: Health checks and liveness/readiness
   - Implement GET /health endpoint
   - Check: Kafka broker reachable, Postgres connection alive, S3 connectivity
   - Return 200 if all healthy, 503 if any down
   - Used by Kubernetes liveness/readiness probes
   - _Requirements: 6 (implicit)_
 
-- [ ] 11. Checkpoint - API Server functional tests
+- [~] 11. Checkpoint - API Server functional tests
   - Run all endpoint tests end-to-end with mocked Kafka/S3/Postgres
   - Verify upload flow: parse → S3 → Kafka → DB → 202 response
   - Verify status query: job created → job queried → status correct
@@ -279,13 +279,13 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Simulate errors, capture logs, verify all required fields in output
   - Parse structured JSON logs
 
-- [ ] 21. Worker Pod: Prometheus metrics emission
+- [~] 21. Worker Pod: Prometheus metrics emission
   - Emit: `pulsegrid_transcode_duration_seconds` (histogram, labeled by rendition), `pulsegrid_transcode_failures_total` (counter, labeled by error_type), `pulsegrid_job_completed_total` (counter)
   - Emit pod metrics: `pulsegrid_pod_resource_constrained` on ResourceConstraintError
   - Expose /metrics endpoint on port 8081 (Prometheus format)
   - _Requirements: 8.3_
 
-- [ ] 22. Checkpoint - Worker Pod functional tests
+- [~] 22. Checkpoint - Worker Pod functional tests
   - End-to-end test: consume Kafka message → download source → transcode → upload → emit metrics → commit
   - Test all renditions produced correctly
   - Test S3 objects tagged and in correct paths
@@ -305,7 +305,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - **Validates: Requirements 2.1**
   - Publish various job specs, consume, verify schema consistent
 
-- [ ] 24. Retry Logic: Exponential backoff utility
+- [~] 24. Retry Logic: Exponential backoff utility
   - Create pkg/retry/backoff.go: `Backoff(attempt int) time.Duration`
   - Formula: 1s, 2s, 4s, 8s, 16s (cap at 16s, max 5 attempts)
   - Used by S3 upload/download, Kafka publish, DB operations
@@ -324,20 +324,20 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Test indexes exist
   - Query test: insert job, query by id, verify result
 
-- [ ] 26. All Requirements Mapping and Validation
+- [~] 26. All Requirements Mapping and Validation
   - Verify each requirement has at least one task or test validating it
   - Ensure no hanging code: all components integrated
   - Check all error paths handled
   - _Requirements: All 1-18_
 
-- [ ] 27. Checkpoint - Full integration test
+- [~] 27. Checkpoint - Full integration test
   - Mock Kafka, S3, Postgres
   - API: POST /videos/upload → consume worker message → download → transcode → upload → query status
   - Verify end-to-end: job submitted → queued → processed → completed
   - Verify all metrics emitted, logs structured, outputs in correct S3 paths
   - Ask user if questions arise.
 
-- [ ] 28. Build configuration and Docker images
+- [~] 28. Build configuration and Docker images
   - Create Dockerfile.api: Go binary, ffmpeg not needed, expose 8080/8081
   - Create Dockerfile.worker: Go binary, ffmpeg installed, expose 8081
   - Create .dockerignore, build with multi-stage
@@ -345,7 +345,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Build scripts for CI/CD
   - _Requirements: 13 (implicit)_
 
-- [ ] 29. Kubernetes manifests and RBAC configuration
+- [~] 29. Kubernetes manifests and RBAC configuration
   - Create kube/api-deployment.yaml from design
   - Create kube/worker-deployment.yaml, KEDA ScaledObject
   - Create ServiceAccounts, Roles, RoleBindings
@@ -353,14 +353,14 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Verify resource requests/limits, probes, environment variables
   - _Requirements: 6, 12, 13_
 
-- [ ] 30. Terraform infrastructure code
+- [~] 30. Terraform infrastructure code
   - Create terraform/ with main.tf, variables.tf, outputs.tf
   - Define: EKS cluster, node groups, S3 buckets, RDS Postgres, VPC, security groups
   - Parameterize: region, environment, instance types, min/max replicas
   - Setup remote state in S3 with encryption and locks
   - _Requirements: 14_
 
-- [ ] 31. Grafana dashboard and Prometheus alerts
+- [~] 31. Grafana dashboard and Prometheus alerts
   - Create dashboard JSON: queue depth gauge, pod count gauge, p50/p95/p99 latency graphs, failure rate, per-rendition breakdown
   - Create alert rules: HighQueueDepth (>100 for 5m), HighFailureRate (>5%), HighP99Latency (>30min), DLQBacklog (>10)
   - Integrate with API /metrics endpoint
@@ -381,7 +381,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Test status polling and timestamp recording
   - Test report generation and SLO validation
 
-- [ ] 33. Integration and E2E validation
+- [~] 33. Integration and E2E validation
   - Deploy all components to staging cluster
   - Run smoke tests: create job, verify processing, verify completion
   - Run load test with 100 jobs, verify scaling and latency SLOs
@@ -389,7 +389,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Collect metrics, verify no data loss
   - _Requirements: 13, 16, 17_
 
-- [ ] 34. Final checkpoint - Production readiness
+- [~] 34. Final checkpoint - Production readiness
   - Verify all tests passing (unit, integration, property, e2e)
   - Verify all requirements covered and validated
   - Verify metrics, logging, error handling comprehensive
