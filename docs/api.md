@@ -64,28 +64,35 @@ Accepts multipart/form-data video uploads. Returns job tracking info.
 
 ### GET /jobs
 
-Query jobs with filters and pagination. Returns paginated job summaries.
+Query jobs with optional time range, status, and pagination filters.
 
 **Query Parameters:**
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| submitted_after | ISO 8601 timestamp | no | — | Inclusive lower bound on submission_time |
-| submitted_before | ISO 8601 timestamp | no | — | Inclusive upper bound on submission_time |
+| submitted_after | ISO 8601 string | no | — | Inclusive lower bound on submission_time |
+| submitted_before | ISO 8601 string | no | — | Inclusive upper bound on submission_time |
 | status | comma-separated string | no | — | Filter by status (submitted, processing, completed, failed) |
 | limit | integer | no | 100 | Max results per page (max 1000) |
-| offset | integer | no | 0 | Pagination offset (must be ≥ 0) |
+| offset | integer | no | 0 | Pagination offset |
+
+**Validation:**
+- `submitted_after` and `submitted_before` must be valid ISO 8601 (RFC 3339) timestamps
+- `submitted_after` must be before `submitted_before` if both provided
+- `limit` must be 1–1000
+- `offset` must be >= 0
+- `status` values must be one of: submitted, processing, completed, failed
 
 **Success Response** (HTTP 200):
 ```json
 {
   "jobs": [
     {
-      "job_id": "uuid",
+      "job_id": "uuid-v4",
       "status": "completed",
       "submission_time": "2024-01-15T10:30:00Z",
       "completion_time": "2024-01-15T10:35:00Z",
-      "duration_seconds": 245
+      "duration_seconds": 300
     }
   ],
   "total": 5000,
@@ -98,18 +105,9 @@ Query jobs with filters and pagination. Returns paginated job summaries.
 
 | Status | Condition | error_code |
 |--------|-----------|------------|
-| 400 | Invalid timestamp format | VALIDATION_ERROR |
-| 400 | submitted_after > submitted_before | VALIDATION_ERROR |
-| 400 | Invalid status value | VALIDATION_ERROR |
-| 400 | limit < 1 or limit > 1000 | VALIDATION_ERROR |
-| 400 | offset < 0 or non-integer | VALIDATION_ERROR |
+| 400 | Invalid timestamp, bad status, limit/offset out of range | VALIDATION_ERROR |
 | 500 | Database query failure | INTERNAL_ERROR |
-
-**Notes:**
-- Returns empty `jobs` array (not null) when no results match
-- Results ordered by `submission_time DESC`
-- `duration_seconds` only present when `completion_time` is set
-- Without DB configured (local dev), returns empty result set
+| 503 | Database not configured | SERVICE_UNAVAILABLE |
 
 ---
 
@@ -142,7 +140,7 @@ Client → POST /videos/upload (multipart/form-data)
 | Function | Purpose |
 |----------|---------|
 | `handleVideoUpload` | Main handler — orchestrates parse/validate/upload/atomic-enqueue/respond |
-| `handleQueryJobs` | GET /jobs handler — parses filters, queries DB, returns paginated results |
+| `handleListJobs` | GET /jobs handler — parses filters, queries DB, returns paginated results |
 | `parseRenditions` | JSON parse + schema validation for renditions |
 | `defaultRenditions` | Returns standard 3-rendition set |
 | `writeError` | Structured error response writer |
@@ -156,8 +154,9 @@ Client → POST /videos/upload (multipart/form-data)
 | `pkg.NewPostgresClient` | Creates pgxpool connection with retry on initial connect |
 | `PostgresClient.RecordJobMetadata` | INSERT job into jobs table |
 | `PostgresClient.RecordStatusEvent` | INSERT event into job_status_events table |
+| `PostgresClient.GetJobByID` | SELECT job by job_id |
+| `PostgresClient.QueryJobs` | SELECT jobs with filters (time range, status, pagination) |
 | `PostgresClient.InsertJobTx` | BEGIN TX + INSERT job with status='submitting', returns TxHandle |
-| `PostgresClient.QueryJobs` | Query jobs with filters (time range, status) + pagination |
 | `TxHandle.UpdateStatusAndCommit` | UPDATE status + COMMIT within transaction |
 | `TxHandle.Rollback` | ROLLBACK transaction (safe if already committed) |
 

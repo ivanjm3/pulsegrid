@@ -386,33 +386,33 @@
 
 ---
 
-## GET /jobs Range Query Endpoint (Filtered Pagination)
+## GET /jobs Range Query Endpoint (Paginated Filtering)
 
 ### Interview Questions
 
-- Why use parameterized SQL ($1, $2) instead of string interpolation for filters?
-- How does dynamic WHERE clause construction affect SQL injection risk?
-- Why two queries (COUNT + SELECT) instead of a single query with window function?
-- How does `submission_time DESC` index affect query performance?
-- Why default limit=100 and max=1000?
-- How does offset-based pagination compare to cursor-based pagination?
-- Why validate submitted_after < submitted_before server-side?
-- How does the IN clause for status filtering work with parameterized queries?
+- Why use parameterized queries ($1, $2) instead of string interpolation for SQL?
+- How does dynamic WHERE clause building handle SQL injection risks?
+- Why return total count with paginated results — what's the cost?
+- Why ORDER BY submission_time DESC — what index supports this?
+- How do you validate ISO 8601 timestamps in Go?
+- Why limit the max page size to 1000?
+- Why separate COUNT(*) query from data query instead of using window functions?
+- How does PostgreSQL handle IN clause with parameterized arrays?
 
 ### Follow-up Questions
 
-- At what scale does offset pagination become expensive (large offsets)?
-- How would you implement cursor-based pagination instead?
-- How would you handle timezone-aware vs UTC timestamps?
-- What happens if a job is inserted between the COUNT and SELECT queries?
-- How would you add full-text search on source_file_name?
-- How would you cache frequently-queried ranges?
-- How does the composite index on (status, submission_time) help multi-filter queries?
+- How would you optimize the COUNT(*) for large tables (millions of rows)?
+- When would you use cursor-based pagination instead of offset/limit?
+- How would you add full-text search to job queries?
+- What happens if a client requests offset=999999 on a 1000-row table?
+- How would you cache query results for frequently accessed ranges?
+- How does the idx_jobs_submission_time index interact with status filtering?
+- What are the tradeoffs of composite indexes (status, submission_time) vs separate?
 
 ### Resume Talking Points
 
-- Dynamic SQL builder with parameterized queries — safe from injection, flexible filters
-- Paginated with total count for UI page indicators
-- Validates all inputs server-side (ISO 8601 parsing, range sanity, limit bounds)
-- Interface-based DB access — handler works with nil DB for local dev (returns empty set)
-- 15 unit tests covering all validation edge cases (bad timestamps, inverted ranges, invalid statuses, limit/offset bounds)
+- Dynamic SQL query builder with parameterized placeholders (no string concat of user input)
+- Dual-query pagination: COUNT(*) for total + LIMIT/OFFSET for page
+- ISO 8601 timestamp validation with range consistency check (after < before)
+- Status whitelist validation prevents unexpected enum values
+- Interface-based DBClient allows nil-safe local dev and mock testing

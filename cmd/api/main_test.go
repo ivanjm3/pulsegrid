@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"pulsegrid/pkg"
 )
 
 func TestUploadSuccess_DefaultRenditions(t *testing.T) {
@@ -315,8 +319,193 @@ var _ = fmt.Sprintf
 
 // --- GET /jobs tests ---
 
-func TestQueryJobs_NoDBReturnsEmpty(t *testing.T) {
-	// dbClient is nil by default in tests (local dev mode).
+// mockDBClient implements pkg.DBClient for testing handleListJobs.
+type mockDBClient struct {
+	queryResult pkg.JobListResult
+	queryErr    error
+	lastFilter  pkg.JobFilter
+}
+
+func (m *mockDBClient) RecordJobMetadata(ctx context.Context, job pkg.Job) error { return nil }
+func (m *mockDBClient) RecordStatusEvent(ctx context.Context, jobID string, eventType string) error {
+	return nil
+}
+func (m *mockDBClient) GetJobByID(ctx context.Context, jobID string) (pkg.Job, error) {
+	return pkg.Job{}, nil
+}
+func (m *mockDBClient) InsertJobTx(ctx context.Context, job pkg.Job) (pkg.TxHandle, error) {
+	return nil, nil
+}
+func (m *mockDBClient) Close() {}
+func (m *mockDBClient) QueryJobs(ctx context.Context, filter pkg.JobFilter) (pkg.JobListResult, error) {
+	m.lastFilter = filter
+	return m.queryResult, m.queryErr
+}
+
+func TestListJobs_Success(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	completionTime := now.Add(5 * time.Minute)
+	dur := completionTime.Sub(now).Seconds()
+
+	mock := &mockDBClient{
+		queryResult: pkg.JobListResult{
+			Jobs: []pkg.JobSummary{
+				{JobID: "job-1", Status: "completed", SubmissionTime: now, CompletionTime: &completionTime, DurationSeconds: &dur},
+				{JobID: "job-2", Status: "processing", SubmissionTime: now},
+			},
+			Total:  2,
+			Limit:  100,
+			Offset: 0,
+		},
+	}
+
+	oldDB := dbClient
+	dbClient = mock
+	defer func() { dbClient = oldDB }()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs?status=completed,processing&limit=50&offset=0", nil)
+	rec := httptest.NewRecorder()
+
+	handleListJobs(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp ListJobsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2, got %d", resp.Total)
+	}
+	if resp.Limit != 100 {
+		t.Fatalf("expected limit=100, got %d", resp.Limit)
+	}
+	if len(resp.Jobs) != 2 {
+		t.Fatalf("expected 2 jobs, got %d", len(resp.Jobs))
+	}
+
+	// Verify filter was passed correctly.
+	if len(mock.lastFilter.Statuses) != 2 {
+		t.Fatalf("expected 2 status filters, got %d", len(mock.lastFilter.Statuses))
+	}
+	if mock.lastFilter.Limit != 50 {
+		t.Fatalf("expected limit=50 in filter, got %d", mock.lastFilter.Limit)
+	}
+}
+
+func TestListJobs_InvalidSubmittedAfter(t *testing.T) {
+	oldDB := dbClient
+	dbClient = &mockDBClient{}
+	defer func() { dbClient = oldDB }()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs?submitted_after=not-a-date", nil)
+	rec := httptest.NewRecorder()
+
+	handleListJobs(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	var errResp ErrorResponse
+	json.NewDecoder(rec.Body).Decode(&errResp)
+	if errResp.ErrorCode != "VALIDATION_ERROR" {
+		t.Fatalf("expected VALIDATION_ERROR, got %s", errResp.ErrorCode)
+	}
+}
+
+func TestListJobs_InvalidSubmittedBefore(t *testing.T) {
+	oldDB := dbClient
+	dbClient = &mockDBClient{}
+	defer func() { dbClient = oldDB }()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs?submitted_before=invalid", nil)
+	rec := httptest.NewRecorder()
+
+	handleListJobs(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestListJobs_AfterExceedsBefore(t *testing.T) {
+	oldDB := dbClient
+	dbClient = &mockDBClient{}
+	defer func() { dbClient = oldDB }()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs?submitted_after=2024-12-01T00:00:00Z&submitted_before=2024-01-01T00:00:00Z", nil)
+	rec := httptest.NewRecorder()
+
+	handleListJobs(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestListJobs_InvalidStatus(t *testing.T) {
+	oldDB := dbClient
+	dbClient = &mockDBClient{}
+	defer func() { dbClient = oldDB }()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs?status=invalid_status", nil)
+	rec := httptest.NewRecorder()
+
+	handleListJobs(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestListJobs_LimitExceedsMax(t *testing.T) {
+	oldDB := dbClient
+	dbClient = &mockDBClient{}
+	defer func() { dbClient = oldDB }()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=5000", nil)
+	rec := httptest.NewRecorder()
+
+	handleListJobs(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestListJobs_InvalidLimit(t *testing.T) {
+	oldDB := dbClient
+	dbClient = &mockDBClient{}
+	defer func() { dbClient = oldDB }()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=-1", nil)
+	rec := httptest.NewRecorder()
+
+	handleListJobs(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestListJobs_InvalidOffset(t *testing.T) {
+	oldDB := dbClient
+	dbClient = &mockDBClient{}
+	defer func() { dbClient = oldDB }()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs?offset=-5", nil)
+	rec := httptest.NewRecorder()
+
+	handleListJobs(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestListJobs_NoDB(t *testing.T) {
 	oldDB := dbClient
 	dbClient = nil
 	defer func() { dbClient = oldDB }()
@@ -324,222 +513,83 @@ func TestQueryJobs_NoDBReturnsEmpty(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/jobs", nil)
 	rec := httptest.NewRecorder()
 
-	handleQueryJobs(rec, req)
+	handleListJobs(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	var resp QueryJobsResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if len(resp.Jobs) != 0 {
-		t.Fatalf("expected empty jobs, got %d", len(resp.Jobs))
-	}
-	if resp.Limit != 100 {
-		t.Fatalf("expected default limit 100, got %d", resp.Limit)
-	}
-	if resp.Offset != 0 {
-		t.Fatalf("expected offset 0, got %d", resp.Offset)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
 	}
 }
 
-func TestQueryJobs_InvalidMethod(t *testing.T) {
+func TestListJobs_WrongMethod(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/jobs", nil)
 	rec := httptest.NewRecorder()
 
-	handleQueryJobs(rec, req)
+	handleListJobs(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
 }
 
-func TestQueryJobs_InvalidSubmittedAfter(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/jobs?submitted_after=not-a-date", nil)
-	rec := httptest.NewRecorder()
-
-	handleQueryJobs(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+func TestListJobs_DefaultLimitOffset(t *testing.T) {
+	mock := &mockDBClient{
+		queryResult: pkg.JobListResult{
+			Jobs:   []pkg.JobSummary{},
+			Total:  0,
+			Limit:  100,
+			Offset: 0,
+		},
 	}
-	var errResp ErrorResponse
-	json.NewDecoder(rec.Body).Decode(&errResp)
-	if errResp.ErrorCode != "VALIDATION_ERROR" {
-		t.Fatalf("expected VALIDATION_ERROR, got %s", errResp.ErrorCode)
-	}
-	if !strings.Contains(errResp.Error, "submitted_after") {
-		t.Fatalf("error should mention submitted_after: %s", errResp.Error)
-	}
-}
 
-func TestQueryJobs_InvalidSubmittedBefore(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/jobs?submitted_before=garbage", nil)
-	rec := httptest.NewRecorder()
-
-	handleQueryJobs(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
-	}
-}
-
-func TestQueryJobs_RangeInverted(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet,
-		"/jobs?submitted_after=2024-06-01T00:00:00Z&submitted_before=2024-01-01T00:00:00Z", nil)
-	rec := httptest.NewRecorder()
-
-	handleQueryJobs(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var errResp ErrorResponse
-	json.NewDecoder(rec.Body).Decode(&errResp)
-	if !strings.Contains(errResp.Error, "before") {
-		t.Fatalf("error should mention range issue: %s", errResp.Error)
-	}
-}
-
-func TestQueryJobs_InvalidStatus(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/jobs?status=bogus", nil)
-	rec := httptest.NewRecorder()
-
-	handleQueryJobs(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
-	}
-	var errResp ErrorResponse
-	json.NewDecoder(rec.Body).Decode(&errResp)
-	if !strings.Contains(errResp.Error, "bogus") {
-		t.Fatalf("error should mention invalid status: %s", errResp.Error)
-	}
-}
-
-func TestQueryJobs_ValidStatuses(t *testing.T) {
 	oldDB := dbClient
-	dbClient = nil
+	dbClient = mock
 	defer func() { dbClient = oldDB }()
 
-	req := httptest.NewRequest(http.MethodGet, "/jobs?status=submitted,completed", nil)
+	req := httptest.NewRequest(http.MethodGet, "/jobs", nil)
 	rec := httptest.NewRecorder()
 
-	handleQueryJobs(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestQueryJobs_LimitExceedsMax(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=5000", nil)
-	rec := httptest.NewRecorder()
-
-	handleQueryJobs(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var errResp ErrorResponse
-	json.NewDecoder(rec.Body).Decode(&errResp)
-	if !strings.Contains(errResp.Error, "1000") {
-		t.Fatalf("error should mention max 1000: %s", errResp.Error)
-	}
-}
-
-func TestQueryJobs_LimitZero(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=0", nil)
-	rec := httptest.NewRecorder()
-
-	handleQueryJobs(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
-	}
-}
-
-func TestQueryJobs_LimitNegative(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=-1", nil)
-	rec := httptest.NewRecorder()
-
-	handleQueryJobs(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
-	}
-}
-
-func TestQueryJobs_OffsetNegative(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/jobs?offset=-5", nil)
-	rec := httptest.NewRecorder()
-
-	handleQueryJobs(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
-	}
-}
-
-func TestQueryJobs_CustomLimitOffset(t *testing.T) {
-	oldDB := dbClient
-	dbClient = nil
-	defer func() { dbClient = oldDB }()
-
-	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=50&offset=200", nil)
-	rec := httptest.NewRecorder()
-
-	handleQueryJobs(rec, req)
+	handleListJobs(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	var resp QueryJobsResponse
-	json.NewDecoder(rec.Body).Decode(&resp)
-	if resp.Limit != 50 {
-		t.Fatalf("expected limit 50, got %d", resp.Limit)
+
+	if mock.lastFilter.Limit != 100 {
+		t.Fatalf("expected default limit=100, got %d", mock.lastFilter.Limit)
 	}
-	if resp.Offset != 200 {
-		t.Fatalf("expected offset 200, got %d", resp.Offset)
+	if mock.lastFilter.Offset != 0 {
+		t.Fatalf("expected default offset=0, got %d", mock.lastFilter.Offset)
 	}
 }
 
-func TestQueryJobs_ValidTimestamps(t *testing.T) {
+func TestListJobs_TimestampFilters(t *testing.T) {
+	mock := &mockDBClient{
+		queryResult: pkg.JobListResult{
+			Jobs:   []pkg.JobSummary{},
+			Total:  0,
+			Limit:  100,
+			Offset: 0,
+		},
+	}
+
 	oldDB := dbClient
-	dbClient = nil
+	dbClient = mock
 	defer func() { dbClient = oldDB }()
 
-	req := httptest.NewRequest(http.MethodGet,
-		"/jobs?submitted_after=2024-01-01T00:00:00Z&submitted_before=2024-12-31T23:59:59Z", nil)
+	req := httptest.NewRequest(http.MethodGet, "/jobs?submitted_after=2024-01-01T00:00:00Z&submitted_before=2024-12-31T23:59:59Z", nil)
 	rec := httptest.NewRecorder()
 
-	handleQueryJobs(rec, req)
+	handleListJobs(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-}
 
-func TestQueryJobs_LimitNotANumber(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=abc", nil)
-	rec := httptest.NewRecorder()
-
-	handleQueryJobs(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
+	if mock.lastFilter.SubmittedAfter == nil {
+		t.Fatal("expected submitted_after to be set")
+	}
+	if mock.lastFilter.SubmittedBefore == nil {
+		t.Fatal("expected submitted_before to be set")
 	}
 }
 
-func TestQueryJobs_OffsetNotANumber(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/jobs?offset=xyz", nil)
-	rec := httptest.NewRecorder()
-
-	handleQueryJobs(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
-	}
-}

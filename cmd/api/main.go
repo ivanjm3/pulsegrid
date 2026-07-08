@@ -92,7 +92,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/videos/upload", handleVideoUpload)
-	mux.HandleFunc("/jobs", handleQueryJobs)
+	mux.HandleFunc("/jobs", handleListJobs)
 
 	addr := ":8080"
 	log.Printf("pulsegrid api server starting on %s", addr)
@@ -251,6 +251,129 @@ func handleVideoUpload(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// ListJobsResponse is the paginated response for GET /jobs.
+type ListJobsResponse struct {
+	Jobs   []pkg.JobSummary `json:"jobs"`
+	Total  int              `json:"total"`
+	Limit  int              `json:"limit"`
+	Offset int              `json:"offset"`
+}
+
+// validJobStatuses is the set of allowed status filter values.
+var validJobStatuses = map[string]bool{
+	"submitted":  true,
+	"processing": true,
+	"completed":  true,
+	"failed":     true,
+}
+
+func handleListJobs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusBadRequest, "Method not allowed", "VALIDATION_ERROR", "Only GET is accepted")
+		return
+	}
+
+	q := r.URL.Query()
+
+	// Parse submitted_after.
+	var submittedAfter *time.Time
+	if val := q.Get("submitted_after"); val != "" {
+		t, err := time.Parse(time.RFC3339, val)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid submitted_after timestamp", "VALIDATION_ERROR", "Must be ISO 8601 format (e.g. 2024-01-15T10:30:00Z)")
+			return
+		}
+		submittedAfter = &t
+	}
+
+	// Parse submitted_before.
+	var submittedBefore *time.Time
+	if val := q.Get("submitted_before"); val != "" {
+		t, err := time.Parse(time.RFC3339, val)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid submitted_before timestamp", "VALIDATION_ERROR", "Must be ISO 8601 format (e.g. 2024-01-15T10:30:00Z)")
+			return
+		}
+		submittedBefore = &t
+	}
+
+	// Validate range: submitted_after must be before submitted_before.
+	if submittedAfter != nil && submittedBefore != nil && submittedAfter.After(*submittedBefore) {
+		writeError(w, http.StatusBadRequest, "submitted_after must be before submitted_before", "VALIDATION_ERROR", "")
+		return
+	}
+
+	// Parse status filter.
+	var statuses []pkg.JobStatus
+	if val := q.Get("status"); val != "" {
+		for _, s := range strings.Split(val, ",") {
+			s = strings.TrimSpace(s)
+			if !validJobStatuses[s] {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("Invalid status value: %s", s), "VALIDATION_ERROR", "Allowed: submitted, processing, completed, failed")
+				return
+			}
+			statuses = append(statuses, pkg.JobStatus(s))
+		}
+	}
+
+	// Parse limit.
+	limit := 100
+	if val := q.Get("limit"); val != "" {
+		l, err := strconv.Atoi(val)
+		if err != nil || l < 1 {
+			writeError(w, http.StatusBadRequest, "Invalid limit parameter", "VALIDATION_ERROR", "Must be a positive integer")
+			return
+		}
+		if l > 1000 {
+			writeError(w, http.StatusBadRequest, "Limit exceeds maximum of 1000", "VALIDATION_ERROR", "Maximum allowed limit is 1000")
+			return
+		}
+		limit = l
+	}
+
+	// Parse offset.
+	offset := 0
+	if val := q.Get("offset"); val != "" {
+		o, err := strconv.Atoi(val)
+		if err != nil || o < 0 {
+			writeError(w, http.StatusBadRequest, "Invalid offset parameter", "VALIDATION_ERROR", "Must be a non-negative integer")
+			return
+		}
+		offset = o
+	}
+
+	// Require DB client.
+	if dbClient == nil {
+		writeError(w, http.StatusServiceUnavailable, "Database not configured", "SERVICE_UNAVAILABLE", "")
+		return
+	}
+
+	filter := pkg.JobFilter{
+		SubmittedAfter:  submittedAfter,
+		SubmittedBefore: submittedBefore,
+		Statuses:        statuses,
+		Limit:           limit,
+		Offset:          offset,
+	}
+
+	result, err := dbClient.QueryJobs(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to query jobs", "INTERNAL_ERROR", err.Error())
+		return
+	}
+
+	resp := ListJobsResponse{
+		Jobs:   result.Jobs,
+		Total:  result.Total,
+		Limit:  result.Limit,
+		Offset: result.Offset,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
+}
+
 // parseRenditions parses and validates the renditions JSON string.
 // Returns default renditions if input is empty.
 func parseRenditions(raw string) ([]pkg.Rendition, error) {
@@ -303,138 +426,5 @@ func writeErrorWithRequestID(w http.ResponseWriter, status int, msg, code, reque
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(resp)
-}
-
-// validJobStatuses is the set of allowed status filter values.
-var validJobStatuses = map[string]pkg.JobStatus{
-	"submitted":  pkg.JobStatusSubmitted,
-	"processing": pkg.JobStatusProcessing,
-	"completed":  pkg.JobStatusCompleted,
-	"failed":     pkg.JobStatusFailed,
-}
-
-// QueryJobsResponse is the response format for GET /jobs.
-type QueryJobsResponse struct {
-	Jobs   []pkg.JobSummary `json:"jobs"`
-	Total  int              `json:"total"`
-	Limit  int              `json:"limit"`
-	Offset int              `json:"offset"`
-}
-
-func handleQueryJobs(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusBadRequest, "Method not allowed", "VALIDATION_ERROR", "Only GET is accepted")
-		return
-	}
-
-	requestID, _ := pkg.GenerateJobID()
-	q := r.URL.Query()
-
-	// Parse submitted_after.
-	var submittedAfter *time.Time
-	if v := q.Get("submitted_after"); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			writeErrorWithRequestID(w, http.StatusBadRequest, "Invalid submitted_after timestamp", "VALIDATION_ERROR", requestID,
-				"Must be ISO 8601 format (e.g. 2024-01-15T10:30:00Z)")
-			return
-		}
-		submittedAfter = &t
-	}
-
-	// Parse submitted_before.
-	var submittedBefore *time.Time
-	if v := q.Get("submitted_before"); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			writeErrorWithRequestID(w, http.StatusBadRequest, "Invalid submitted_before timestamp", "VALIDATION_ERROR", requestID,
-				"Must be ISO 8601 format (e.g. 2024-01-15T10:30:00Z)")
-			return
-		}
-		submittedBefore = &t
-	}
-
-	// Validate range: submitted_after must be before submitted_before.
-	if submittedAfter != nil && submittedBefore != nil && submittedAfter.After(*submittedBefore) {
-		writeErrorWithRequestID(w, http.StatusBadRequest, "submitted_after must be before submitted_before", "VALIDATION_ERROR", requestID, "")
-		return
-	}
-
-	// Parse status filter.
-	var statuses []pkg.JobStatus
-	if v := q.Get("status"); v != "" {
-		parts := strings.Split(v, ",")
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			s, ok := validJobStatuses[p]
-			if !ok {
-				writeErrorWithRequestID(w, http.StatusBadRequest,
-					fmt.Sprintf("Invalid status: %s", p), "VALIDATION_ERROR", requestID,
-					"Valid statuses: submitted, processing, completed, failed")
-				return
-			}
-			statuses = append(statuses, s)
-		}
-	}
-
-	// Parse limit (default 100, max 1000).
-	limit := 100
-	if v := q.Get("limit"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 {
-			writeErrorWithRequestID(w, http.StatusBadRequest, "Invalid limit", "VALIDATION_ERROR", requestID,
-				"limit must be a positive integer")
-			return
-		}
-		if n > 1000 {
-			writeErrorWithRequestID(w, http.StatusBadRequest, "limit exceeds maximum (1000)", "VALIDATION_ERROR", requestID, "")
-			return
-		}
-		limit = n
-	}
-
-	// Parse offset (default 0).
-	offset := 0
-	if v := q.Get("offset"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 0 {
-			writeErrorWithRequestID(w, http.StatusBadRequest, "Invalid offset", "VALIDATION_ERROR", requestID,
-				"offset must be a non-negative integer")
-			return
-		}
-		offset = n
-	}
-
-	params := pkg.JobQueryParams{
-		SubmittedAfter:  submittedAfter,
-		SubmittedBefore: submittedBefore,
-		Statuses:        statuses,
-		Limit:           limit,
-		Offset:          offset,
-	}
-
-	if dbClient == nil {
-		// No DB configured (local dev) — return empty result.
-		resp := QueryJobsResponse{Jobs: []pkg.JobSummary{}, Total: 0, Limit: limit, Offset: offset}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-		return
-	}
-
-	result, err := dbClient.QueryJobs(r.Context(), params)
-	if err != nil {
-		log.Printf("ERROR: query jobs failed: %v", err)
-		writeErrorWithRequestID(w, http.StatusInternalServerError, "Failed to query jobs", "INTERNAL_ERROR", requestID, "")
-		return
-	}
-
-	resp := QueryJobsResponse{
-		Jobs:   result.Jobs,
-		Total:  result.Total,
-		Limit:  result.Limit,
-		Offset: result.Offset,
-	}
-	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }

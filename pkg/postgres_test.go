@@ -97,18 +97,19 @@ func (m *mockDBClient) Close() {
 	m.closed = true
 }
 
-func (m *mockDBClient) QueryJobs(ctx context.Context, params JobQueryParams) (JobQueryResult, error) {
+func (m *mockDBClient) QueryJobs(ctx context.Context, filter JobFilter) (JobListResult, error) {
+	// Simple mock: return all stored jobs filtered in-memory.
 	var results []JobSummary
 	for _, j := range m.jobs {
-		if params.SubmittedAfter != nil && j.SubmissionTime.Before(*params.SubmittedAfter) {
+		if filter.SubmittedAfter != nil && j.SubmissionTime.Before(*filter.SubmittedAfter) {
 			continue
 		}
-		if params.SubmittedBefore != nil && j.SubmissionTime.After(*params.SubmittedBefore) {
+		if filter.SubmittedBefore != nil && j.SubmissionTime.After(*filter.SubmittedBefore) {
 			continue
 		}
-		if len(params.Statuses) > 0 {
+		if len(filter.Statuses) > 0 {
 			found := false
-			for _, s := range params.Statuses {
+			for _, s := range filter.Statuses {
 				if j.Status == s {
 					found = true
 					break
@@ -132,18 +133,21 @@ func (m *mockDBClient) QueryJobs(ctx context.Context, params JobQueryParams) (Jo
 	}
 	total := len(results)
 	// Apply offset/limit.
-	if params.Offset >= len(results) {
+	if filter.Offset >= len(results) {
 		results = []JobSummary{}
 	} else {
-		results = results[params.Offset:]
-		if params.Limit < len(results) {
-			results = results[:params.Limit]
+		end := filter.Offset + filter.Limit
+		if end > len(results) {
+			end = len(results)
 		}
+		results = results[filter.Offset:end]
 	}
-	if results == nil {
-		results = []JobSummary{}
-	}
-	return JobQueryResult{Jobs: results, Total: total, Limit: params.Limit, Offset: params.Offset}, nil
+	return JobListResult{
+		Jobs:   results,
+		Total:  total,
+		Limit:  filter.Limit,
+		Offset: filter.Offset,
+	}, nil
 }
 
 func TestDBClient_RecordJobMetadata_Success(t *testing.T) {

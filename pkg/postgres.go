@@ -21,10 +21,10 @@ type TxHandle interface {
 	Rollback(ctx context.Context) error
 }
 
-// JobQueryParams defines filters for querying jobs.
-type JobQueryParams struct {
-	SubmittedAfter  *time.Time // inclusive
-	SubmittedBefore *time.Time // inclusive
+// JobFilter holds query parameters for filtering jobs.
+type JobFilter struct {
+	SubmittedAfter  *time.Time
+	SubmittedBefore *time.Time
 	Statuses        []JobStatus
 	Limit           int
 	Offset          int
@@ -39,8 +39,8 @@ type JobSummary struct {
 	DurationSeconds *float64   `json:"duration_seconds,omitempty"`
 }
 
-// JobQueryResult holds paginated query results.
-type JobQueryResult struct {
+// JobListResult holds paginated query results.
+type JobListResult struct {
 	Jobs   []JobSummary `json:"jobs"`
 	Total  int          `json:"total"`
 	Limit  int          `json:"limit"`
@@ -53,7 +53,7 @@ type DBClient interface {
 	RecordJobMetadata(ctx context.Context, job Job) error
 	RecordStatusEvent(ctx context.Context, jobID string, eventType string) error
 	GetJobByID(ctx context.Context, jobID string) (Job, error)
-	QueryJobs(ctx context.Context, params JobQueryParams) (JobQueryResult, error)
+	QueryJobs(ctx context.Context, filter JobFilter) (JobListResult, error)
 	// InsertJobTx begins a transaction, inserts job with given status, returns TxHandle.
 	// Caller uses TxHandle to update status + commit or rollback.
 	InsertJobTx(ctx context.Context, job Job) (TxHandle, error)
@@ -172,6 +172,83 @@ func (c *PostgresClient) GetJobByID(ctx context.Context, jobID string) (Job, err
 	return job, nil
 }
 
+// QueryJobs queries jobs with filters and returns paginated results.
+func (c *PostgresClient) QueryJobs(ctx context.Context, filter JobFilter) (JobListResult, error) {
+	// Build WHERE clauses dynamically.
+	conditions := []string{}
+	args := []interface{}{}
+	argIdx := 1
+
+	if filter.SubmittedAfter != nil {
+		conditions = append(conditions, fmt.Sprintf("submission_time >= $%d", argIdx))
+		args = append(args, *filter.SubmittedAfter)
+		argIdx++
+	}
+	if filter.SubmittedBefore != nil {
+		conditions = append(conditions, fmt.Sprintf("submission_time <= $%d", argIdx))
+		args = append(args, *filter.SubmittedBefore)
+		argIdx++
+	}
+	if len(filter.Statuses) > 0 {
+		placeholders := []string{}
+		for _, s := range filter.Statuses {
+			placeholders = append(placeholders, fmt.Sprintf("$%d", argIdx))
+			args = append(args, string(s))
+			argIdx++
+		}
+		conditions = append(conditions, fmt.Sprintf("status IN (%s)", strings.Join(placeholders, ", ")))
+	}
+
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = "WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	// Count total matching rows.
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM jobs %s", whereClause)
+	var total int
+	if err := c.pool.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+		return JobListResult{}, fmt.Errorf("count jobs: %w", err)
+	}
+
+	// Fetch paginated results.
+	dataQuery := fmt.Sprintf(
+		"SELECT job_id, status, submission_time, completion_time FROM jobs %s ORDER BY submission_time DESC LIMIT $%d OFFSET $%d",
+		whereClause, argIdx, argIdx+1,
+	)
+	args = append(args, filter.Limit, filter.Offset)
+
+	rows, err := c.pool.Query(ctx, dataQuery, args...)
+	if err != nil {
+		return JobListResult{}, fmt.Errorf("query jobs: %w", err)
+	}
+	defer rows.Close()
+
+	jobs := []JobSummary{}
+	for rows.Next() {
+		var js JobSummary
+		if err := rows.Scan(&js.JobID, &js.Status, &js.SubmissionTime, &js.CompletionTime); err != nil {
+			return JobListResult{}, fmt.Errorf("scan job row: %w", err)
+		}
+		// Calculate duration if completed.
+		if js.CompletionTime != nil {
+			dur := js.CompletionTime.Sub(js.SubmissionTime).Seconds()
+			js.DurationSeconds = &dur
+		}
+		jobs = append(jobs, js)
+	}
+	if err := rows.Err(); err != nil {
+		return JobListResult{}, fmt.Errorf("iterate job rows: %w", err)
+	}
+
+	return JobListResult{
+		Jobs:   jobs,
+		Total:  total,
+		Limit:  filter.Limit,
+		Offset: filter.Offset,
+	}, nil
+}
+
 // RecordStatusEvent inserts a status event into job_status_events table.
 func (c *PostgresClient) RecordStatusEvent(ctx context.Context, jobID string, eventType string) error {
 	query := `
@@ -184,86 +261,6 @@ func (c *PostgresClient) RecordStatusEvent(ctx context.Context, jobID string, ev
 	}
 
 	return nil
-}
-
-// QueryJobs queries jobs table with filters and pagination.
-func (c *PostgresClient) QueryJobs(ctx context.Context, params JobQueryParams) (JobQueryResult, error) {
-	// Build WHERE clauses dynamically.
-	var conditions []string
-	var args []interface{}
-	argIdx := 1
-
-	if params.SubmittedAfter != nil {
-		conditions = append(conditions, fmt.Sprintf("submission_time >= $%d", argIdx))
-		args = append(args, *params.SubmittedAfter)
-		argIdx++
-	}
-	if params.SubmittedBefore != nil {
-		conditions = append(conditions, fmt.Sprintf("submission_time <= $%d", argIdx))
-		args = append(args, *params.SubmittedBefore)
-		argIdx++
-	}
-	if len(params.Statuses) > 0 {
-		placeholders := make([]string, len(params.Statuses))
-		for i, s := range params.Statuses {
-			placeholders[i] = fmt.Sprintf("$%d", argIdx)
-			args = append(args, string(s))
-			argIdx++
-		}
-		conditions = append(conditions, fmt.Sprintf("status IN (%s)", strings.Join(placeholders, ",")))
-	}
-
-	whereClause := ""
-	if len(conditions) > 0 {
-		whereClause = "WHERE " + strings.Join(conditions, " AND ")
-	}
-
-	// Count total matching.
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM jobs %s", whereClause)
-	var total int
-	if err := c.pool.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
-		return JobQueryResult{}, fmt.Errorf("count jobs: %w", err)
-	}
-
-	// Fetch page.
-	dataQuery := fmt.Sprintf(
-		"SELECT job_id, status, submission_time, completion_time FROM jobs %s ORDER BY submission_time DESC LIMIT $%d OFFSET $%d",
-		whereClause, argIdx, argIdx+1,
-	)
-	args = append(args, params.Limit, params.Offset)
-
-	rows, err := c.pool.Query(ctx, dataQuery, args...)
-	if err != nil {
-		return JobQueryResult{}, fmt.Errorf("query jobs: %w", err)
-	}
-	defer rows.Close()
-
-	var jobs []JobSummary
-	for rows.Next() {
-		var js JobSummary
-		if err := rows.Scan(&js.JobID, &js.Status, &js.SubmissionTime, &js.CompletionTime); err != nil {
-			return JobQueryResult{}, fmt.Errorf("scan job row: %w", err)
-		}
-		if js.CompletionTime != nil {
-			dur := js.CompletionTime.Sub(js.SubmissionTime).Seconds()
-			js.DurationSeconds = &dur
-		}
-		jobs = append(jobs, js)
-	}
-	if err := rows.Err(); err != nil {
-		return JobQueryResult{}, fmt.Errorf("iterate jobs: %w", err)
-	}
-
-	if jobs == nil {
-		jobs = []JobSummary{}
-	}
-
-	return JobQueryResult{
-		Jobs:   jobs,
-		Total:  total,
-		Limit:  params.Limit,
-		Offset: params.Offset,
-	}, nil
 }
 
 // Close closes the connection pool.
