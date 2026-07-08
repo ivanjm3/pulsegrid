@@ -61,6 +61,10 @@ func (m *mockS3Uploader) UploadSourceToS3(ctx context.Context, file io.Reader, j
 	return fmt.Sprintf("s3://pulsegrid-source/%s/original.mp4", jobID), nil
 }
 
+func (m *mockS3Uploader) Ping(ctx context.Context) error {
+	return nil
+}
+
 // --- Tests for S3 Upload Behavior ---
 
 func TestS3Upload_SuccessfulUpload_ReturnsCorrectURI(t *testing.T) {

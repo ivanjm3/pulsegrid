@@ -15,6 +15,7 @@ import (
 type KafkaProducer interface {
 	EnqueueJob(ctx context.Context, job Job) error
 	SendDLQ(ctx context.Context, job Job, reason string) error
+	Ping(ctx context.Context) error
 	Close() error
 }
 
@@ -145,6 +146,16 @@ func (c *KafkaClient) SendDLQ(ctx context.Context, job Job, reason string) error
 		return fmt.Errorf("kafka dlq send failed for job %s: %w", job.JobID, err)
 	}
 
+	return nil
+}
+
+// Ping checks Kafka broker connectivity by dialing the first broker.
+func (c *KafkaClient) Ping(ctx context.Context) error {
+	conn, err := kafka.DialContext(ctx, "tcp", c.writer.Addr.String())
+	if err != nil {
+		return fmt.Errorf("kafka ping: %w", err)
+	}
+	conn.Close()
 	return nil
 }
 

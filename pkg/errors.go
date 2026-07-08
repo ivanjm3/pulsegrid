@@ -1,6 +1,12 @@
 package pkg
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// ErrJobNotFound is returned when a job_id does not exist in the database.
+var ErrJobNotFound = errors.New("job not found")
 
 // TranscodingError represents a failure during the ffmpeg transcoding process.
 type TranscodingError struct {

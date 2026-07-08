@@ -97,6 +97,10 @@ func (m *mockDBClient) Close() {
 	m.closed = true
 }
 
+func (m *mockDBClient) Ping(ctx context.Context) error {
+	return nil
+}
+
 func (m *mockDBClient) QueryJobs(ctx context.Context, filter JobFilter) (JobListResult, error) {
 	// Simple mock: return all stored jobs filtered in-memory.
 	var results []JobSummary

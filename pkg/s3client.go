@@ -19,10 +19,12 @@ const sourceBucket = "pulsegrid-source"
 // Allows mocking in tests and nil-check for local dev.
 type S3Uploader interface {
 	UploadSourceToS3(ctx context.Context, file io.Reader, jobID string, sourceName string) (string, error)
+	Ping(ctx context.Context) error
 }
 
 // S3Client wraps AWS SDK v2 S3 client for source uploads.
 type S3Client struct {
+	client   *s3.Client
 	uploader *manager.Uploader
 	bucket   string
 }
@@ -35,6 +37,7 @@ func NewS3Client(cfg aws.Config, bucket string) *S3Client {
 		u.Concurrency = 5
 	})
 	return &S3Client{
+		client:   client,
 		uploader: uploader,
 		bucket:   bucket,
 	}
@@ -75,4 +78,15 @@ func (c *S3Client) UploadSourceToS3(ctx context.Context, file io.Reader, jobID s
 	}
 
 	return s3URI, nil
+}
+
+// Ping checks S3 bucket connectivity using HeadBucket.
+func (c *S3Client) Ping(ctx context.Context) error {
+	_, err := c.client.HeadBucket(ctx, &s3.HeadBucketInput{
+		Bucket: aws.String(c.bucket),
+	})
+	if err != nil {
+		return fmt.Errorf("s3 ping: %w", err)
+	}
+	return nil
 }

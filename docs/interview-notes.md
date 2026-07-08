@@ -416,3 +416,146 @@
 - ISO 8601 timestamp validation with range consistency check (after < before)
 - Status whitelist validation prevents unexpected enum values
 - Interface-based DBClient allows nil-safe local dev and mock testing
+
+
+---
+
+## Prometheus Metrics Instrumentation (API Server)
+
+### Interview Questions
+
+- Why emit metrics only on successful requests (not errors)?
+- How does `prometheus.Counter` differ from `prometheus.Gauge`?
+- Why use a histogram for upload duration instead of a summary?
+- How do histogram buckets affect query performance in Prometheus?
+- What's the difference between Prometheus push vs pull model?
+- Why use a custom `prometheus.Registry` in tests?
+- How does `time.Since()` precision affect sub-millisecond observations?
+- Why place timing at handler entry vs after validation?
+
+### Follow-up Questions
+
+- How would you add labels (rendition count, file size bucket) without cardinality explosion?
+- How does histogram quantile estimation work (Prometheus vs pre-computed summaries)?
+- How would you alert on upload duration p99 exceeding 2 seconds?
+- What happens if Prometheus scrape misses a counter increment?
+- How would you add request-scoped metrics (per job_id) without unbounded cardinality?
+- How does the /metrics endpoint interact with Kubernetes service discovery?
+- When would you use a Summary instead of Histogram?
+
+### Resume Talking Points
+
+- Instrumented upload handler: counter (jobs_submitted_total) + histogram (upload_duration_seconds)
+- Metrics emitted only on success path (after 202) — no noise from validation errors
+- Custom histogram buckets (0.1s–300s) tuned for upload latency distribution
+- Injectable `*Metrics` struct with custom registry — full test isolation, no global state leakage
+- Tested: counter increments, histogram observation count, bucket boundaries, no-emit on failure
+
+
+---
+
+## Kafka Queue Depth Gauge (Background Polling)
+
+### Interview Questions
+
+- Why poll Kafka admin API for queue depth instead of using consumer lag metrics directly?
+- How does partition end_offset minus committed_offset give queue depth?
+- Why run polling in a background goroutine vs computing on each /metrics scrape?
+- How do you handle broker unavailability in the polling loop?
+- Why use `kafka.DialLeader` per partition vs a single admin connection?
+- What's the difference between consumer lag and queue depth?
+- Why default to 30-second poll interval — what tradeoffs exist?
+- How does `OffsetFetch` request work in Kafka's group coordinator protocol?
+
+### Follow-up Questions
+
+- How would you handle partition rebalancing mid-poll?
+- What happens if consumer group has never committed offsets (brand new group)?
+- How would you optimize to avoid N connections for N partitions?
+- How does this interact with KEDA's own queue depth polling?
+- What happens if committed_offset > end_offset (log truncation, retention)?
+- How would you add per-partition lag breakdown as separate metrics?
+- What's the memory/connection overhead of polling 32 partitions every 30s?
+- How would you test this without a running Kafka cluster?
+
+### Resume Talking Points
+
+- Implemented queue depth as Prometheus gauge — polls Kafka admin API every 30s
+- Calculates sum(end_offset - committed_offset) across all partitions
+- Graceful degradation: logs warning on poll failure, keeps last known value
+- Uses kafka-go's `OffsetFetch` API to get consumer group committed offsets
+- Same pattern as KEDA uses for autoscaling decisions — single source of truth for queue pressure
+
+
+---
+
+## Health Check Endpoint (Liveness/Readiness Probes)
+
+### Interview Questions
+
+- Why separate liveness from readiness probes in Kubernetes?
+- Why check all dependencies (Postgres, Kafka, S3) instead of just returning 200?
+- How does a 5-second timeout on health checks prevent cascading failures?
+- Why return 503 instead of 500 when a dependency is down?
+- How does `HeadBucket` differ from `ListBuckets` for S3 health checks?
+- Why use `pool.Ping()` instead of running a SELECT 1 query?
+- How does the health endpoint interact with Kubernetes pod lifecycle?
+- Why show individual component status vs just aggregate pass/fail?
+
+### Follow-up Questions
+
+- How would you implement a degraded state (e.g., S3 down but Kafka up — can still accept jobs)?
+- How would you prevent health check storms when Kafka broker is slow?
+- What happens if health check itself is slow — does Kubernetes restart the pod?
+- How would you implement circuit breaking for unhealthy dependencies?
+- How does `failureThreshold` interact with probe periodSeconds?
+- Why not cache health check results to avoid hammering dependencies?
+- How would you distinguish between liveness (should I restart?) and readiness (should I route traffic?)?
+- What's the risk of a false-positive health check (says healthy but can't actually serve requests)?
+
+### Resume Talking Points
+
+- Implemented per-component health check with structured response (status + error details)
+- 5-second context timeout prevents slow dependencies from blocking probe response
+- Interface-based design (`Ping()` on each client) — same pattern as mocking for tests
+- Graceful handling of "not_configured" state for local dev mode (returns healthy)
+- Kafka ping: TCP dial to broker (lightweight, no message publish)
+- S3 ping: HeadBucket (verifies both connectivity and IAM permissions)
+- Postgres ping: pgxpool.Ping (verifies pool has working connection, handles reconnect)
+
+
+---
+
+## API Functional Testing & Integration Test Patterns
+
+### Interview Questions
+
+- Why test the full upload flow (parse → S3 → Kafka → DB → 202) as a single test?
+- How do you mock three dependencies simultaneously without test complexity explosion?
+- Why use in-memory mock DB (map) vs a test database?
+- How does interface-based design enable dependency injection for tests?
+- What's the difference between unit tests and integration tests in this context?
+- Why test the round-trip (upload → query same job) as a separate integration test?
+- How do mock TxHandle patterns validate atomic write semantics?
+- Why verify mock call counts (e.g., S3 uploadCalled, Kafka enqueuedJobs length)?
+
+### Follow-up Questions
+
+- How would you test against real Kafka/Postgres in CI without slowing tests?
+- When would you use testcontainers vs interface mocks?
+- How do you prevent test pollution when swapping global variables (s3Uploader, dbClient)?
+- What are risks of defer-based restore patterns for global state in parallel tests?
+- How would you test timeout/context cancellation across the full flow?
+- How do you validate the integration test covers the same code path as production?
+- What's the tradeoff between high-fidelity integration tests vs fast unit tests?
+- How would you add contract tests between API and Worker (shared Kafka schema)?
+
+### Resume Talking Points
+
+- Integration tests verify full pipeline with all three mocks wired together (S3 + Kafka + DB)
+- In-memory mock DB with TxHandle simulates atomic commit/rollback semantics
+- Round-trip test (upload → query) validates data flows correctly between endpoints
+- Mock verification: checked S3 received correct jobID, Kafka received correct message, DB has correct status
+- Global variable swap with defer restore — fast isolation without DI framework
+- Same mock interfaces used for both unit tests and integration tests (reusability)
+- Covered: happy path, S3 failure, Kafka failure, DB commit failure, 404 not found

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"pulsegrid/pkg"
 )
 
@@ -26,6 +29,9 @@ var kafkaProducer pkg.KafkaProducer
 
 // dbClient is the global Postgres client. Nil when DATABASE_URL not configured (local dev).
 var dbClient pkg.DBClient
+
+// apiMetrics holds Prometheus metrics for the API server.
+var apiMetrics *pkg.Metrics
 
 // ErrorResponse is the structured error response format.
 type ErrorResponse struct {
@@ -90,9 +96,36 @@ func main() {
 		log.Printf("Kafka producer not configured (no KAFKA_BROKERS). Running in local mode.")
 	}
 
+	// Initialize Prometheus metrics.
+	apiMetrics = pkg.NewMetrics(prometheus.DefaultRegisterer)
+
+	// Start queue depth poller if Kafka configured.
+	if brokersEnv := os.Getenv("KAFKA_BROKERS"); brokersEnv != "" {
+		brokers := strings.Split(brokersEnv, ",")
+		topic := os.Getenv("KAFKA_TOPIC")
+		if topic == "" {
+			topic = "transcoding-jobs"
+		}
+		consumerGroup := os.Getenv("KAFKA_CONSUMER_GROUP")
+		if consumerGroup == "" {
+			consumerGroup = "pulsegrid-workers"
+		}
+		pkg.StartQueueDepthPoller(context.Background(), pkg.QueueDepthPollerConfig{
+			Brokers:       brokers,
+			Topic:         topic,
+			ConsumerGroup: consumerGroup,
+			PollInterval:  30 * time.Second,
+			Gauge:         apiMetrics.QueueDepthJobs,
+		})
+		log.Printf("Queue depth poller started (topic: %s, group: %s, interval: 30s)", topic, consumerGroup)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/videos/upload", handleVideoUpload)
+	mux.HandleFunc("/jobs/", handleGetJob)
 	mux.HandleFunc("/jobs", handleListJobs)
+	mux.HandleFunc("/health", handleHealth)
+	mux.Handle("/metrics", promhttp.Handler())
 
 	addr := ":8080"
 	log.Printf("pulsegrid api server starting on %s", addr)
@@ -101,7 +134,86 @@ func main() {
 	}
 }
 
+// HealthResponse is the response for GET /health.
+type HealthResponse struct {
+	Status   string                   `json:"status"`
+	Checks   map[string]ComponentCheck `json:"checks"`
+}
+
+// ComponentCheck is the health status of an individual component.
+type ComponentCheck struct {
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusBadRequest, "Method not allowed", "VALIDATION_ERROR", "Only GET is accepted")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	checks := make(map[string]ComponentCheck)
+	allHealthy := true
+
+	// Check Postgres.
+	if dbClient != nil {
+		if err := dbClient.Ping(ctx); err != nil {
+			checks["postgres"] = ComponentCheck{Status: "unhealthy", Error: err.Error()}
+			allHealthy = false
+		} else {
+			checks["postgres"] = ComponentCheck{Status: "healthy"}
+		}
+	} else {
+		checks["postgres"] = ComponentCheck{Status: "not_configured"}
+	}
+
+	// Check Kafka.
+	if kafkaProducer != nil {
+		if err := kafkaProducer.Ping(ctx); err != nil {
+			checks["kafka"] = ComponentCheck{Status: "unhealthy", Error: err.Error()}
+			allHealthy = false
+		} else {
+			checks["kafka"] = ComponentCheck{Status: "healthy"}
+		}
+	} else {
+		checks["kafka"] = ComponentCheck{Status: "not_configured"}
+	}
+
+	// Check S3.
+	if s3Uploader != nil {
+		if err := s3Uploader.Ping(ctx); err != nil {
+			checks["s3"] = ComponentCheck{Status: "unhealthy", Error: err.Error()}
+			allHealthy = false
+		} else {
+			checks["s3"] = ComponentCheck{Status: "healthy"}
+		}
+	} else {
+		checks["s3"] = ComponentCheck{Status: "not_configured"}
+	}
+
+	resp := HealthResponse{
+		Checks: checks,
+	}
+
+	status := http.StatusOK
+	if allHealthy {
+		resp.Status = "healthy"
+	} else {
+		resp.Status = "unhealthy"
+		status = http.StatusServiceUnavailable
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(resp)
+}
+
 func handleVideoUpload(w http.ResponseWriter, r *http.Request) {
+	uploadStart := time.Now()
+
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusBadRequest, "Method not allowed", "VALIDATION_ERROR", "Only POST is accepted")
 		return
@@ -246,6 +358,12 @@ func handleVideoUpload(w http.ResponseWriter, r *http.Request) {
 		SubmissionTime:           submissionTime.Format(time.RFC3339),
 	}
 
+	// Emit Prometheus metrics on successful submission.
+	if apiMetrics != nil {
+		apiMetrics.JobsSubmittedTotal.Inc()
+		apiMetrics.UploadDurationSeconds.Observe(time.Since(uploadStart).Seconds())
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(resp)
@@ -367,6 +485,68 @@ func handleListJobs(w http.ResponseWriter, r *http.Request) {
 		Total:  result.Total,
 		Limit:  result.Limit,
 		Offset: result.Offset,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
+}
+
+// JobStatusResponse is the response for GET /jobs/{job_id}.
+type JobStatusResponse struct {
+	JobID          string            `json:"job_id"`
+	Status         pkg.JobStatus     `json:"status"`
+	SubmissionTime string            `json:"submission_time"`
+	CompletionTime *string           `json:"completion_time,omitempty"`
+	RetryCount     int               `json:"retry_count"`
+	OutputFiles    []pkg.OutputFile  `json:"output_files,omitempty"`
+	FailureReason  *string           `json:"failure_reason,omitempty"`
+}
+
+func handleGetJob(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusBadRequest, "Method not allowed", "VALIDATION_ERROR", "Only GET is accepted")
+		return
+	}
+
+	// Parse job_id from URL path: /jobs/{job_id}
+	path := strings.TrimPrefix(r.URL.Path, "/jobs/")
+	jobID := strings.TrimSpace(path)
+	if jobID == "" {
+		writeError(w, http.StatusBadRequest, "Missing job_id in path", "VALIDATION_ERROR", "URL must be /jobs/{job_id}")
+		return
+	}
+
+	if dbClient == nil {
+		writeError(w, http.StatusServiceUnavailable, "Database not configured", "SERVICE_UNAVAILABLE", "")
+		return
+	}
+
+	job, err := dbClient.GetJobByID(r.Context(), jobID)
+	if err != nil {
+		if errors.Is(err, pkg.ErrJobNotFound) {
+			writeError(w, http.StatusNotFound, "Job not found", "NOT_FOUND", fmt.Sprintf("No job with id: %s", jobID))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "Failed to query job", "INTERNAL_ERROR", err.Error())
+		return
+	}
+
+	resp := JobStatusResponse{
+		JobID:          job.JobID,
+		Status:         job.Status,
+		SubmissionTime: job.SubmissionTime.Format(time.RFC3339),
+		RetryCount:     job.RetryCount,
+		OutputFiles:    job.OutputFiles,
+	}
+
+	if job.CompletionTime != nil {
+		ct := job.CompletionTime.Format(time.RFC3339)
+		resp.CompletionTime = &ct
+	}
+
+	if job.FailureReason != "" {
+		resp.FailureReason = &job.FailureReason
 	}
 
 	w.Header().Set("Content-Type", "application/json")

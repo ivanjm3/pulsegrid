@@ -3,6 +3,7 @@ package pkg
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -57,6 +58,7 @@ type DBClient interface {
 	// InsertJobTx begins a transaction, inserts job with given status, returns TxHandle.
 	// Caller uses TxHandle to update status + commit or rollback.
 	InsertJobTx(ctx context.Context, job Job) (TxHandle, error)
+	Ping(ctx context.Context) error
 	Close()
 }
 
@@ -162,6 +164,9 @@ func (c *PostgresClient) GetJobByID(ctx context.Context, jobID string) (Job, err
 		&job.RetryCount,
 	)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Job{}, ErrJobNotFound
+		}
 		return Job{}, fmt.Errorf("get job %s: %w", jobID, err)
 	}
 
@@ -261,6 +266,11 @@ func (c *PostgresClient) RecordStatusEvent(ctx context.Context, jobID string, ev
 	}
 
 	return nil
+}
+
+// Ping checks Postgres connectivity via the connection pool.
+func (c *PostgresClient) Ping(ctx context.Context) error {
+	return c.pool.Ping(ctx)
 }
 
 // Close closes the connection pool.

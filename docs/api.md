@@ -111,6 +111,92 @@ Query jobs with optional time range, status, and pagination filters.
 
 ---
 
+### GET /health
+
+Health check endpoint for Kubernetes liveness/readiness probes. Checks connectivity to all backend dependencies.
+
+**Success Response** (HTTP 200 — all healthy):
+```json
+{
+  "status": "healthy",
+  "checks": {
+    "postgres": {"status": "healthy"},
+    "kafka": {"status": "healthy"},
+    "s3": {"status": "healthy"}
+  }
+}
+```
+
+**Failure Response** (HTTP 503 — one or more unhealthy):
+```json
+{
+  "status": "unhealthy",
+  "checks": {
+    "postgres": {"status": "unhealthy", "error": "connection refused"},
+    "kafka": {"status": "healthy"},
+    "s3": {"status": "healthy"}
+  }
+}
+```
+
+**Check Statuses:**
+- `healthy` — component reachable and responding
+- `unhealthy` — component unreachable (includes error message)
+- `not_configured` — component not configured (local dev mode)
+
+**Behavior:**
+- 5-second timeout on all health checks (prevents slow probe from hanging)
+- Returns 200 if all configured components are healthy (or none configured)
+- Returns 503 if any configured component fails ping
+- Postgres: uses `pool.Ping()` (verifies connection pool has live connection)
+- Kafka: dials broker TCP connection (verifies network reachability)
+- S3: calls `HeadBucket` (verifies bucket exists and credentials valid)
+
+**Kubernetes Usage:**
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  periodSeconds: 15
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  periodSeconds: 10
+  failureThreshold: 2
+```
+
+---
+
+### GET /metrics
+
+Exposes Prometheus metrics in exposition format. Scraped by Prometheus at configured interval.
+
+**Metrics exposed:**
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `pulsegrid_jobs_submitted_total` | counter | Total jobs successfully submitted (incremented on 202 response) |
+| `pulsegrid_upload_duration_seconds` | histogram | Duration of full upload flow (request start → 202 response) |
+| `pulsegrid_queue_depth_jobs` | gauge | Current number of jobs waiting in transcoding-jobs Kafka topic (updated every 30s) |
+
+**Histogram Buckets**: 0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0 seconds
+
+**Queue Depth Gauge:**
+- Polls Kafka admin API every 30s via background goroutine
+- Calculates: sum(end_offset - committed_offset) across all partitions of `transcoding-jobs` topic
+- Uses consumer group `pulsegrid-workers` (configurable via `KAFKA_CONSUMER_GROUP`)
+- Returns 0 if no consumer group committed offsets exist (all messages unconsumed)
+- Gracefully handles broker unavailability (logs warning, keeps last value)
+
+**Notes:**
+- Metrics only emitted on successful submission (not on 4xx/5xx errors)
+- Uses injectable `*pkg.Metrics` struct — test isolation via custom `prometheus.Registry`
+
+---
+
 ## Architecture
 
 ```
@@ -139,8 +225,10 @@ Client → POST /videos/upload (multipart/form-data)
 
 | Function | Purpose |
 |----------|---------|
-| `handleVideoUpload` | Main handler — orchestrates parse/validate/upload/atomic-enqueue/respond |
+| `handleVideoUpload` | Main handler — orchestrates parse/validate/upload/atomic-enqueue/metrics-emit/respond |
 | `handleListJobs` | GET /jobs handler — parses filters, queries DB, returns paginated results |
+| `handleGetJob` | GET /jobs/{job_id} handler — fetches job by ID, returns status/outputs |
+| `handleHealth` | GET /health handler — pings Postgres, Kafka, S3 and returns aggregate health |
 | `parseRenditions` | JSON parse + schema validation for renditions |
 | `defaultRenditions` | Returns standard 3-rendition set |
 | `writeError` | Structured error response writer |
@@ -151,6 +239,7 @@ Client → POST /videos/upload (multipart/form-data)
 | `KafkaClient.EnqueueJob` | Serializes Job to JSON, publishes to Kafka with retry |
 | `KafkaClient.SendDLQ` | Publishes failed job to dead-letter queue |
 | `pkg.RetryWithBackoff` | Generic exponential backoff retry utility |
+| `pkg.StartQueueDepthPoller` | Background goroutine polling Kafka for queue depth, updating Prometheus gauge |
 | `pkg.NewPostgresClient` | Creates pgxpool connection with retry on initial connect |
 | `PostgresClient.RecordJobMetadata` | INSERT job into jobs table |
 | `PostgresClient.RecordStatusEvent` | INSERT event into job_status_events table |
@@ -217,11 +306,13 @@ Client → POST /videos/upload (multipart/form-data)
 | `KAFKA_BROKERS` | No | — | Comma-separated broker list (enables Kafka when set) |
 | `KAFKA_TOPIC` | No | `transcoding-jobs` | Kafka topic for job messages |
 | `KAFKA_DLQ_TOPIC` | No | `transcoding-dlq` | Kafka dead-letter queue topic |
+| `KAFKA_CONSUMER_GROUP` | No | `pulsegrid-workers` | Consumer group for queue depth calculation |
 | `DATABASE_URL` | No | — | Postgres connection string (enables DB when set) |
 
 ## Design Decisions
 
 - **Atomic DB-Kafka write ordering**: DB first (status='submitting') → Kafka → DB update (status='submitted') → commit. Prevents orphans (job in queue but no DB record). If Kafka fails, rollback makes job invisible. If commit fails after Kafka, log ALERT for operator.
+- **Prometheus metrics emission**: Counter + histogram emitted only on successful 202 response (not on validation/error paths). Timing starts at handler entry, observed at end. Uses injectable `*Metrics` for test isolation with custom registry.
 - **MaxBytesReader** over Content-Length check: CL header can be spoofed; MaxBytesReader enforces at read time
 - **Modular handler**: Parse/validate layer is separate — S3/Kafka/DB integration wires in later
 - **Structured errors**: Every error has request_id + timestamp for distributed tracing

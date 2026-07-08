@@ -42,6 +42,14 @@ type Rendition struct {
 	BaseResolution  string `json:"base_resolution,omitempty"` // for HLS
 }
 
+// OutputFile represents a transcoded output file in the job status response.
+type OutputFile struct {
+	Rendition       string `json:"rendition"`
+	Path            string `json:"path"`
+	SizeBytes       int64  `json:"size_bytes"`
+	DurationSeconds int    `json:"duration_seconds"`
+}
+
 // Job represents a transcoding job in the system.
 type Job struct {
 	JobID                  string      `json:"job_id"`
@@ -56,6 +64,7 @@ type Job struct {
 	SubmissionTime         time.Time   `json:"submission_time"`
 	ProcessingStartTime    *time.Time  `json:"processing_start_time,omitempty"`
 	CompletionTime         *time.Time  `json:"completion_time,omitempty"`
-	FailureReason          string      `json:"failure_reason,omitempty"`
-	VisibilityTimeoutSecs  int         `json:"visibility_timeout_seconds"`
+	FailureReason          string       `json:"failure_reason,omitempty"`
+	OutputFiles            []OutputFile `json:"output_files,omitempty"`
+	VisibilityTimeoutSecs  int          `json:"visibility_timeout_seconds"`
 }
