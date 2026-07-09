@@ -13,7 +13,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Define error types: `TranscodingError`, `ResourceConstraintError`
   - _Requirements: 1.4, 2.1_
 
-- [x]* 1.1 Write property test for Job ID generation
+- [x]\* 1.1 Write property test for Job ID generation
   - **Property 1: Job ID Uniqueness and Format**
   - **Validates: Requirements 1.4**
   - Generate 100+ random upload contexts, verify all Job IDs unique and RFC 4122 v4 format
@@ -90,7 +90,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Add request_id generation for tracing
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6_
 
-- [x]* 6.1 Write unit test for DB-Kafka write order
+- [x]\* 6.1 Write unit test for DB-Kafka write order
   - Mock Kafka publish fails → verify DB transaction rolled back, job not inserted
   - Mock DB update fails after Kafka → verify alert logged, orphan flag set
 
@@ -102,7 +102,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Return 404 if job not found
   - _Requirements: 5.5_
 
-- [x]* 7.1 Write unit tests for status query
+- [x]\* 7.1 Write unit tests for status query
   - Test completed job → returns status, completion_time, output_files
   - Test processing job → returns status, no completion_time
   - Test nonexistent job → 404 Not Found
@@ -123,7 +123,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - **DO NOT** query Kafka consumer lag yet (worker consumer doesn't exist until task 12)
   - _Requirements: 8.1, 8.2 (partial)_
 
-- [x]* 9.1 Write unit tests for metrics emission
+- [x]\* 9.1 Write unit tests for metrics emission
   - Mock Prometheus registry, emit events, verify counters incremented
   - Verify histogram buckets correct (upload_duration_seconds)
 
@@ -158,7 +158,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - If poll returns timeout (no message): continue, don't process
   - _Requirements: 3.1, 3.2, 12.1, 12.2_
 
-- [ ]* 12.1 Write unit tests for consumer lifecycle
+- [ ]\* 12.1 Write unit tests for consumer lifecycle
   - Test consumer joins group, fetches from partition
   - Test SIGTERM: signal sent, current job processing completes, consumer closes, exit
   - Test offset committed only after successful process
@@ -172,7 +172,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Log download size and time
   - _Requirements: 3.2_
 
-- [ ]* 13.1 Write unit tests for S3 download
+- [ ]\* 13.1 Write unit tests for S3 download
   - Mock S3, test successful download to temp file
   - Test network error → retry and succeed
   - Test 404 → permanent error (no retry)
@@ -187,7 +187,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Return metadata: rendition_id, file_path, file_size, duration_seconds
   - _Requirements: 3.3, 3.5_
 
-- [ ]* 14.1 Write unit tests for ffmpeg transcoding
+- [ ]\* 14.1 Write unit tests for ffmpeg transcoding
   - Mock ffmpeg (shell wrapper script), test command building
   - Test valid rendition → output file created
   - Test invalid codec → ffmpeg exits 1, error captured
@@ -201,7 +201,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Return metadata: rendition_id, playlist_path, segment_count
   - _Requirements: 4.3_
 
-- [ ]* 15.1 Write unit tests for HLS generation
+- [ ]\* 15.1 Write unit tests for HLS generation
   - Mock ffmpeg with script that creates dummy segments
   - Test HLS command built correctly
   - Verify playlist.m3u8 and .ts files created
@@ -213,7 +213,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Verify JSON valid, write to file: `{temp_dir}/manifest.json`
   - _Requirements: 4.4_
 
-- [ ]* 16.1 Write property test for manifest schema
+- [ ]\* 16.1 Write property test for manifest schema
   - **Property 6: Manifest Generation Schema**
   - **Validates: Requirements 4.4**
   - Generate random result sets (0-5 renditions), generate manifests
@@ -228,7 +228,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Handle permanent errors (403): return error, don't retry
   - _Requirements: 3.4, 7.1, 7.2_
 
-- [ ]* 17.1 Write unit tests for S3 upload
+- [ ]\* 17.1 Write unit tests for S3 upload
   - Mock S3, test successful upload with tags
   - Test transient error (503) → retry → success
   - Test permanent error (403) → no retry
@@ -245,12 +245,11 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Emit metrics: `pulsegrid_transcode_failure` (counter, labeled error_type: "retryable"|"permanent"|"constraint")
   - _Requirements: 2.4, 2.5, 3.7, 11.1, 11.5_
 
-- [ ]* 18.1 Write property test for retry logic (retryable errors only)
+- [ ]\* 18.1 Write property test for retry logic (retryable errors only)
   - **Property 3: Retry Count Increment on Failure**
   - **Validates: Requirements 2.4**
   - Generate jobs with retry_count in [0, 2], mock retryable error, verify re-enqueue with +1
-  
-- [ ]* 18.2 Write property test for DLQ entry (permanent errors)
+- [ ]\* 18.2 Write property test for DLQ entry (permanent errors)
   - **Property 4: Dead Letter Queue Entry on Max Retries OR Permanent Errors**
   - **Validates: Requirements 2.5, 11.1, 11.5**
   - Generate jobs with retry_count = 3, mock permanent error, verify DLQ message
@@ -261,7 +260,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Log deletion result, handle permission errors gracefully
   - _Requirements: 3.6_
 
-- [ ]* 19.1 Write property test for temp file cleanup
+- [ ]\* 19.1 Write property test for temp file cleanup
   - **Property 9: Temporary File Cleanup**
   - **Validates: Requirements 3.6**
   - Create temp files in /tmp/{jobID}, process job, verify directory removed
@@ -273,7 +272,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Log failures with: ffmpeg_stderr (first 500 chars), retry_count, error_type
   - _Requirements: 3.5, 12.2_
 
-- [ ]* 20.1 Write property test for error logging
+- [ ]\* 20.1 Write property test for error logging
   - **Property 10: Error Logging Context**
   - **Validates: Requirements 3.5, 12.2**
   - Simulate errors, capture logs, verify all required fields in output
@@ -300,14 +299,14 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Allow easy mocking for tests
   - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6_
 
-- [ ]* 23.1 Write property test for queue schema
+- [ ]\* 23.1 Write property test for queue schema
   - **Property 2: Kafka Job Message Schema Compliance** (integrated test)
   - **Validates: Requirements 2.1**
   - Publish various job specs, consume, verify schema consistent
 
 - [x] 24. Retry Logic: Exponential backoff utility
   - Implemented in `pkg/retry.go` as `RetryWithBackoff(ctx, maxAttempts, baseDelay, fn)`
-  - Formula: baseDelay * 2^attempt, capped at 16s
+  - Formula: baseDelay \* 2^attempt, capped at 16s
   - Used by S3 upload/download, Kafka publish, DB connection
   - Tests in `pkg/retry_test.go` (success, retry, all-fail, context cancel, exponential verify, cap verify)
   - _Requirements: 1.6 (implicit), 11 (implicit)_
@@ -319,7 +318,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - ~~Create TimescaleDB hypertable for job_status_events~~ ✓
   - _Requirements: 5.1, 5.2_
 
-- [ ]* 25.1 Write unit tests for schema
+- [ ]\* 25.1 Write unit tests for schema
   - Test migrations run without errors
   - Test tables created with correct columns and types
   - Test indexes exist
@@ -345,7 +344,6 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Create Makefile: targets for build, test, docker-build, docker-push
   - Build scripts for CI/CD
   - _Requirements: 13 (implicit)_
-  
 - [x] 29. Kubernetes manifests and RBAC configuration
   - Create kube/api-deployment.yaml from design
   - Create kube/worker-deployment.yaml, KEDA ScaledObject
@@ -362,13 +360,13 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Minimal footprint: 2 AZs, single NAT, no MSK (Kafka in-cluster), micro RDS for dev
   - _Requirements: 14_
 
-- [ ] 31. Grafana dashboard and Prometheus alerts
+- [x] 31. Grafana dashboard and Prometheus alerts
   - Create dashboard JSON: queue depth gauge, pod count gauge, p50/p95/p99 latency graphs, failure rate, per-rendition breakdown
   - Create alert rules: HighQueueDepth (>100 for 5m), HighFailureRate (>5%), HighP99Latency (>30min), DLQBacklog (>10)
   - Integrate with API /metrics endpoint
   - _Requirements: 9, 8_
 
-- [ ] 32. Load Test Harness
+- [x] 32. Load Test Harness
   - Create cmd/load-test/ with configuration: num_jobs, video_size, burst_duration, target_renditions
   - Implement job submission loop: POST /videos/upload, collect job_ids
   - Implement polling loop: GET /jobs/{id}, record submission/completion times
@@ -377,13 +375,13 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Generate markdown summary with pass/fail
   - _Requirements: 10_
 
-- [ ]* 32.1 Write unit tests for load test harness
+- [ ]\* 32.1 Write unit tests for load test harness
   - Test config parsing
   - Test job submission request building
   - Test status polling and timestamp recording
   - Test report generation and SLO validation
 
-- [ ] 33. Integration and E2E validation
+- [x] 33. Integration and E2E validation
   - Deploy all components to staging cluster
   - Run smoke tests: create job, verify processing, verify completion
   - Run load test with 100 jobs, verify scaling and latency SLOs
@@ -409,7 +407,7 @@ Convert design into incremental, testable Go implementation steps. Each task bui
 
 - Queue depth gauge (task 9.2) deferred to wave 5 after task 12 (worker consumer exists), or query Kafka admin API directly (no dependency on worker lag).
 
-- All property tests (marked with *) use 100+ iterations of generated inputs
+- All property tests (marked with \*) use 100+ iterations of generated inputs
 
 - Core component tests unit tested; external services (S3, Kafka, Postgres) mocked in unit tests, real in integration
 
@@ -439,7 +437,10 @@ Convert design into incremental, testable Go implementation steps. Each task bui
     { "id": 4, "tasks": ["10", "12", "12.1"] },
     { "id": 5, "tasks": ["9.2", "13", "13.1", "14", "14.1", "15", "15.1"] },
     { "id": 6, "tasks": ["16", "16.1", "17", "17.1"] },
-    { "id": 7, "tasks": ["18", "18.1", "18.2", "19", "19.1", "20", "20.1", "21"] },
+    {
+      "id": 7,
+      "tasks": ["18", "18.1", "18.2", "19", "19.1", "20", "20.1", "21"]
+    },
     { "id": 8, "tasks": ["23", "23.1", "24", "25", "25.1"] },
     { "id": 9, "tasks": ["26", "27", "28", "29", "30", "31", "32", "32.1"] },
     { "id": 10, "tasks": ["33", "34"] }

@@ -1,0 +1,61 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: pulsegrid-alerts
+  namespace: pulsegrid
+  labels:
+    app.kubernetes.io/name: pulsegrid
+    app.kubernetes.io/component: monitoring
+spec:
+  groups:
+    - name: pulsegrid.observability
+      interval: 30s
+      rules:
+        - alert: HighQueueDepth
+          expr: pulsegrid_queue_depth_jobs > 100
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Queue depth exceeds 100 jobs
+            description: Kafka queue depth is {{ $value }} jobs.
+
+        - alert: HighFailureRate
+          expr: |
+            sum(rate(pulsegrid_transcode_failures_total[5m]))
+              / (sum(rate(pulsegrid_job_completed_total[5m])) + sum(rate(pulsegrid_transcode_failures_total[5m])) + 0.001)
+              > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Transcode failure rate exceeds 5%
+            description: Failure rate is {{ $value | humanizePercentage }}.
+
+        - alert: HighP99Latency
+          expr: |
+            histogram_quantile(0.99, sum by (le) (rate(pulsegrid_transcode_duration_seconds_bucket[5m]))) > 1800
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: P99 transcode latency exceeds 30 minutes
+            description: P99 latency is {{ $value }} seconds.
+
+        - alert: DLQBacklog
+          expr: pulsegrid_queue_depth_dlq_jobs > 10
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Dead-letter queue backlog is growing
+            description: DLQ depth is {{ $value }} jobs.
+
+        - alert: PodResourceConstrained
+          expr: increase(pulsegrid_pod_resource_constrained[5m]) > 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: Worker pod hit a resource constraint
+            description: A worker pod reported a resource constraint within the last 5 minutes.
