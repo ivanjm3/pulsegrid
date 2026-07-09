@@ -1,0 +1,82 @@
+# --- ServiceAccount: API ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pulsegrid-api
+  namespace: pulsegrid
+  labels:
+    app.kubernetes.io/name: pulsegrid-api
+    app.kubernetes.io/component: api
+---
+# --- ServiceAccount: Worker ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pulsegrid-worker
+  namespace: pulsegrid
+  labels:
+    app.kubernetes.io/name: pulsegrid-worker
+    app.kubernetes.io/component: worker
+---
+# --- Role: API (read pods, configmaps for health/config discovery) ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pulsegrid-api-role
+  namespace: pulsegrid
+  labels:
+    app.kubernetes.io/name: pulsegrid-api
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+# --- Role: Worker (minimal — read configmaps, no cluster-wide access) ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pulsegrid-worker-role
+  namespace: pulsegrid
+  labels:
+    app.kubernetes.io/name: pulsegrid-worker
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list", "watch"]
+---
+# --- RoleBinding: API ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pulsegrid-api-rolebinding
+  namespace: pulsegrid
+  labels:
+    app.kubernetes.io/name: pulsegrid-api
+subjects:
+  - kind: ServiceAccount
+    name: pulsegrid-api
+    namespace: pulsegrid
+roleRef:
+  kind: Role
+  name: pulsegrid-api-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# --- RoleBinding: Worker ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pulsegrid-worker-rolebinding
+  namespace: pulsegrid
+  labels:
+    app.kubernetes.io/name: pulsegrid-worker
+subjects:
+  - kind: ServiceAccount
+    name: pulsegrid-worker
+    namespace: pulsegrid
+roleRef:
+  kind: Role
+  name: pulsegrid-worker-role
+  apiGroup: rbac.authorization.k8s.io

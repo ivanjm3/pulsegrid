@@ -338,15 +338,15 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Verify all metrics emitted, logs structured, outputs in correct S3 paths
   - Ask user if questions arise.
 
-- [ ] 28. Build configuration and Docker images
+- [x] 28. Build configuration and Docker images
   - Create Dockerfile.api: Go binary, ffmpeg not needed, expose 8080/8081
   - Create Dockerfile.worker: Go binary, ffmpeg installed, expose 8081
   - Create .dockerignore, build with multi-stage
   - Create Makefile: targets for build, test, docker-build, docker-push
   - Build scripts for CI/CD
   - _Requirements: 13 (implicit)_
-
-- [ ] 29. Kubernetes manifests and RBAC configuration
+  
+- [x] 29. Kubernetes manifests and RBAC configuration
   - Create kube/api-deployment.yaml from design
   - Create kube/worker-deployment.yaml, KEDA ScaledObject
   - Create ServiceAccounts, Roles, RoleBindings
@@ -354,11 +354,12 @@ Convert design into incremental, testable Go implementation steps. Each task bui
   - Verify resource requests/limits, probes, environment variables
   - _Requirements: 6, 12, 13_
 
-- [ ] 30. Terraform infrastructure code
+- [x] 30. Terraform infrastructure code
   - Create terraform/ with main.tf, variables.tf, outputs.tf
   - Define: EKS cluster, node groups, S3 buckets, RDS Postgres, VPC, security groups
   - Parameterize: region, environment, instance types, min/max replicas
   - Setup remote state in S3 with encryption and locks
+  - Minimal footprint: 2 AZs, single NAT, no MSK (Kafka in-cluster), micro RDS for dev
   - _Requirements: 14_
 
 - [ ] 31. Grafana dashboard and Prometheus alerts

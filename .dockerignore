@@ -1,0 +1,43 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+api.exe
+worker.exe
+
+# Test artifacts
+*.test
+*.out
+coverage/
+
+# IDE and OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Git
+.git
+.gitignore
+
+# Kiro specs
+.kiro/
+
+# Documentation (not needed in image)
+docs/
+README.md
+
+# Terraform and Kubernetes manifests
+terraform/
+kube/
+
+# Test fixtures
+test/
+
+# Docker files (don't COPY themselves)
+Dockerfile*
+docker-compose*.yml

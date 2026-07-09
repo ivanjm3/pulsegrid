@@ -1095,3 +1095,195 @@
 - Verified S3 output paths follow convention: `{jobID}/{rendition}/{filename}`
 - Zero external dependencies — runs in < 1 second with pure Go mocks
 - Separate test package avoids circular imports between two `package main` binaries
+
+---
+
+## Docker Multi-Stage Builds (API + Worker)
+
+### Interview Questions
+
+- Why use multi-stage Docker builds instead of single-stage?
+- Why use `alpine:3.19` as runtime base vs `scratch` or `distroless`?
+- Why set `CGO_ENABLED=0` for Go builds in Docker?
+- What do `-ldflags="-s -w"` do to the binary?
+- Why copy `go.mod` and `go.sum` first before copying source code?
+- Why does the worker image need ffmpeg but the API image doesn't?
+- Why run containers as non-root user (USER pulsegrid)?
+- How does `.dockerignore` improve build performance and image security?
+- Why expose port 8081 on the worker but not 8080?
+
+### Follow-up Questions
+
+- How would you reduce image size further (Alpine vs Distroless vs Scratch)?
+- What security scanning tools would you run against these images (Trivy, Snyk)?
+- How would you handle Go private modules in Docker builds?
+- What's the tradeoff of `golang:1.22-alpine` vs `golang:1.22-bookworm` as builder?
+- How would you cache Docker layers in CI (BuildKit cache mounts)?
+- How would you pin the ffmpeg version for reproducible builds?
+- What happens if the builder stage has a vulnerability — does it affect runtime?
+- How would you implement health checks in the Dockerfile (HEALTHCHECK instruction)?
+
+### Resume Talking Points
+
+- Multi-stage builds: builder stage compiles Go binary, runtime stage is minimal Alpine (~30MB)
+- Separate Dockerfiles per service: API (no ffmpeg, ~15MB) vs Worker (ffmpeg installed, ~80MB)
+- Non-root container execution for security best practices
+- Layer caching strategy: dependencies downloaded first, source copy second (cache invalidation optimization)
+- Static Go binary (CGO_ENABLED=0) — no libc dependency, runs on any Linux base
+
+---
+
+## Makefile and Build Automation
+
+### Interview Questions
+
+- Why use Make for Go projects instead of just `go build`?
+- What does `.PHONY` do and why is it needed?
+- How does `$(shell git describe --tags)` provide version info to builds?
+- Why use `?=` for REGISTRY/VERSION variables?
+- What's the purpose of `-count=1` flag in `go test`?
+- Why separate `test` from `test-unit` and `test-race` targets?
+- How does `make ci` compose multiple targets into a pipeline?
+
+### Follow-up Questions
+
+- When would you use Task (go-task) or Mage instead of Make?
+- How would you add parallel execution for independent targets?
+- How would you add a `make release` target with cross-compilation?
+- What are limitations of Make on Windows vs Linux/macOS?
+- How would you integrate code generation (`go generate`) into the build?
+- Why not put Docker commands directly in CI yml instead of Makefile?
+
+### Resume Talking Points
+
+- Makefile provides consistent build interface for local dev and CI/CD
+- Version injection via ldflags (git describe) — binary knows its own version
+- Race detector target (`test-race`) catches concurrency bugs early
+- Clean separation: build, test, lint, docker-build, docker-push
+- Platform-agnostic Docker builds via `--platform` flag
+
+---
+
+## CI/CD with GitHub Actions
+
+### Interview Questions
+
+- Why separate lint, test, build, and docker into different jobs?
+- How does `needs: [lint, test]` create a dependency graph?
+- Why only push Docker images on main branch (not PRs)?
+- How does GHCR (GitHub Container Registry) authentication work with GITHUB_TOKEN?
+- Why use Docker Buildx and build cache (`cache-from: type=gha`)?
+- What is the purpose of the race detector (`-race`) in CI but not in production builds?
+- How does `actions/setup-go` with Go version pinning prevent build drift?
+- Why tag images with both `${{ github.sha }}` and `latest`?
+
+### Follow-up Questions
+
+- How would you add deployment stages (staging → production) with manual approval?
+- How would you implement canary deployments from this pipeline?
+- What secrets management strategy would you use for production credentials?
+- How would you add integration tests that need Kafka/Postgres in CI?
+- How would you implement rollback if a deployment fails health checks?
+- What's the tradeoff of monorepo CI (build both services) vs per-service triggers?
+- How would you add vulnerability scanning (Trivy) as a pipeline gate?
+- How would you implement GitOps (ArgoCD) triggered by image push?
+
+### Resume Talking Points
+
+- GitHub Actions pipeline: lint → test (with race detector) → build → Docker push
+- GHCR integration with automatic token authentication (no external registry secrets)
+- Docker layer caching via GitHub Actions cache backend (faster rebuilds)
+- Conditional push: only main branch pushes produce container images
+- Artifact upload for coverage reports — enables quality gate checks
+- Multi-image pipeline: API and Worker built and pushed independently
+
+
+---
+
+## Kubernetes Manifests, KEDA Autoscaling, and RBAC
+
+### Interview Questions
+
+- Why separate ServiceAccounts for API and Worker instead of one shared account?
+- How does KEDA ScaledObject differ from Kubernetes HPA?
+- Why use `lagThreshold: 10` in KEDA Kafka trigger — what does it mean?
+- How does `terminationGracePeriodSeconds: 1800` interact with SIGTERM handling in worker?
+- Why use `tcpSocket` liveness probe for worker instead of HTTP?
+- How do `envFrom` ConfigMapRef and SecretRef differ from individual env vars?
+- Why set resource requests (2 CPU / 4Gi) separate from limits (4 CPU / 8Gi)?
+- How does Kubernetes RBAC Role differ from ClusterRole?
+- Why use `pollingInterval: 15` and `cooldownPeriod: 300` in KEDA?
+- How does Prometheus annotation-based scraping work (`prometheus.io/scrape`)?
+- Why store secrets in K8s Secret vs external secrets manager (AWS Secrets Manager)?
+
+### Follow-up Questions
+
+- How would you implement pod disruption budgets for zero-downtime deploys?
+- What happens if KEDA scales down while worker is mid-transcode?
+- How would you use IRSA (IAM Roles for Service Accounts) instead of static AWS credentials?
+- How does `minReplicaCount: 1` vs `0` affect cold-start latency?
+- When would you use NetworkPolicy to restrict worker pod egress?
+- How would you implement canary deployments for API server?
+- What are risks of `stringData` in Secret YAML committed to git?
+- How would you seal secrets for GitOps (SealedSecrets, SOPS)?
+- How does resource limit `8Gi` interact with ffmpeg memory usage for 4K video?
+- What happens if worker pod exceeds memory limit — OOMKilled vs graceful handling?
+- How does KEDA formula `ceil(lag / 10)` handle partition-level granularity?
+
+### Resume Talking Points
+
+- Designed least-privilege RBAC: separate ServiceAccounts per component, namespace-scoped Roles
+- KEDA ScaledObject with Kafka trigger: ceil(consumer_lag / 10), min=1, max=100, 300s cooldown
+- 30-minute termination grace period aligned with Kafka session timeout for in-flight job completion
+- ConfigMap/Secret separation: non-sensitive config in ConfigMap, credentials in Secret (templated for external injection)
+- Worker resource profile tuned for ffmpeg: 2 CPU / 4Gi request (guaranteed), 4 CPU / 8Gi burst limit
+- Prometheus scraping via pod annotations — no ServiceMonitor CRDs needed
+
+
+---
+
+## Terraform Infrastructure as Code (EKS, VPC, RDS, S3, MSK)
+
+### Interview Questions
+
+- Why use Terraform over CloudFormation or CDK for this project?
+- How does remote state in S3 with DynamoDB locking prevent concurrent modification?
+- Why separate state-bootstrap from main infrastructure config?
+- How does `cidrsubnet()` function calculate subnet CIDRs from VPC CIDR?
+- Why use NAT Gateway for private subnets instead of all public subnets?
+- Why put EKS nodes in private subnets but allow public API endpoint?
+- How does KMS encryption on S3 state bucket protect terraform state?
+- Why use `create_before_destroy` lifecycle on security groups?
+- How do node group taints (`workload=transcoding:NoSchedule`) isolate worker pods?
+- Why use managed node groups vs self-managed EC2 instances for EKS?
+- How does `prevent_destroy` lifecycle differ from `deletion_protection`?
+- Why parameterize instance types, min/max sizes instead of hardcoding?
+- How does MSK `min.insync.replicas=2` relate to Kafka `RequireAll` acks?
+- Why use gp3 storage for RDS instead of io1/io2?
+- How does S3 lifecycle rule `abort_incomplete_multipart_upload` prevent cost leaks?
+
+### Follow-up Questions
+
+- How would you implement Terraform workspaces vs separate state files per environment?
+- How would you handle secrets in Terraform (db_password) without committing to git?
+- What happens if `terraform apply` is interrupted mid-creation?
+- How would you import existing resources into Terraform state?
+- When would you use Terraform modules to DRY up the configuration?
+- How does EKS OIDC issuer enable IRSA (IAM Roles for Service Accounts)?
+- What's the blast radius if someone runs `terraform destroy` on prod?
+- How would you implement drift detection for manual AWS console changes?
+- How does `endpoint_private_access = true` affect kubectl access from outside VPC?
+- What happens if NAT Gateway fails — how do private subnet pods reach S3/ECR?
+- How would you add a WAF in front of the EKS ingress?
+- How does the DynamoDB lock table handle stale locks (crashed terraform process)?
+
+### Resume Talking Points
+
+- Full IaC with Terraform: VPC (3-AZ), EKS cluster + managed node groups, RDS Postgres, MSK Kafka, S3 buckets
+- Remote state: encrypted S3 bucket + DynamoDB locking — prevents concurrent applies and state corruption
+- Network isolation: private subnets for compute, dedicated DB subnets, NAT Gateway for egress
+- Security group layering: EKS nodes → RDS (5432 only), EKS nodes → MSK (9092/9094), no direct internet to DB/Kafka
+- Environment parameterization: dev (t3.medium, single-AZ DB) vs prod (c5.2xlarge, multi-AZ, larger storage)
+- Worker node taints prevent API pods from scheduling on GPU/CPU-optimized transcoding instances
+- S3 buckets: versioning, KMS encryption, public access blocked, lifecycle rules for incomplete uploads
+- MSK config: 32 partitions, replication factor 3, min ISR 2 — matches application-level ack semantics

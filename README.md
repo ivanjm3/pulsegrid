@@ -42,6 +42,44 @@ HTTP server on port 8080. Accepts video uploads via `POST /videos/upload` (multi
 
 See [docs/api.md](docs/api.md) for full endpoint documentation.
 
+## Infrastructure (Terraform)
+
+Minimal AWS footprint in `terraform/` — Kafka runs **in-cluster** on EKS (see `kube/configmap.yaml`), not MSK.
+
+```
+terraform/
+├── main.tf                 # VPC, EKS, S3, RDS
+├── variables.tf            # Region, env, instance types, scaling knobs
+├── outputs.tf              # Cluster endpoint, bucket names, RDS host
+├── state-bootstrap/        # One-time remote state (S3 + DynamoDB lock)
+└── environments/
+    ├── dev.tfvars          # t3.small API, SPOT workers, db.t4g.micro, 2 AZs
+    └── prod.tfvars         # Slightly larger; enable versioning + Multi-AZ RDS
+```
+
+**Resources provisioned:**
+- VPC: 2 AZs, public + private subnets, **one** NAT gateway (optional)
+- EKS: API node group + worker node group (tainted for transcoding; SPOT in dev)
+- S3: source + output buckets (SSE-S3, optional versioning)
+- RDS Postgres 15 (private subnets, micro/small by default)
+- Remote state: S3 + DynamoDB (via `state-bootstrap/`)
+
+**Usage:**
+```bash
+# Bootstrap remote state (once)
+cd terraform/state-bootstrap && terraform init && terraform apply
+
+# Deploy infrastructure
+cd terraform
+terraform init
+terraform plan -var-file=environments/dev.tfvars -var="db_password=<secret>"
+terraform apply -var-file=environments/dev.tfvars -var="db_password=<secret>"
+
+# Wire kube ConfigMap from outputs
+terraform output s3_source_bucket_name
+terraform output rds_hostname
+```
+
 ## Build
 
 ```bash

@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pulsegrid-worker
+  namespace: pulsegrid
+  labels:
+    app.kubernetes.io/name: pulsegrid-worker
+    app.kubernetes.io/component: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pulsegrid-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pulsegrid-worker
+        app.kubernetes.io/component: worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: pulsegrid-worker
+      terminationGracePeriodSeconds: 1800
+      containers:
+        - name: worker
+          image: pulsegrid/worker:latest
+          ports:
+            - name: metrics
+              containerPort: 8081
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: pulsegrid-config
+            - secretRef:
+                name: pulsegrid-secrets
+          env:
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+          livenessProbe:
+            tcpSocket:
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 2
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: pulsegrid-worker-scaler
+  namespace: pulsegrid
+  labels:
+    app.kubernetes.io/name: pulsegrid-worker
+    app.kubernetes.io/component: autoscaler
+spec:
+  scaleTargetRef:
+    name: pulsegrid-worker
+  pollingInterval: 15
+  cooldownPeriod: 300
+  minReplicaCount: 1
+  maxReplicaCount: 100
+  triggers:
+    - type: kafka
+      metadata:
+        bootstrapServers: "kafka-0.kafka.pulsegrid.svc.cluster.local:9092,kafka-1.kafka.pulsegrid.svc.cluster.local:9092,kafka-2.kafka.pulsegrid.svc.cluster.local:9092"
+        consumerGroup: "pulsegrid-workers"
+        topic: "transcoding-jobs"
+        lagThreshold: "10"
