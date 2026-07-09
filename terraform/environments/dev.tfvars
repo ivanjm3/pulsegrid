@@ -4,9 +4,9 @@
 environment = "dev"
 region      = "us-east-1"
 
-# 2 AZs, single NAT gateway
+# 2 AZs, no NAT gateway (nodes in public subnets to save ~$32/mo)
 az_count           = 2
-enable_nat_gateway = true
+enable_nat_gateway = false
 
 # EKS - smallest practical sizing
 eks_cluster_version           = "1.29"
@@ -19,7 +19,7 @@ worker_node_instance_types    = ["t3.large"]
 worker_node_capacity_type     = "SPOT"
 worker_node_min_size          = 0
 worker_node_max_size          = 3
-worker_node_desired_size      = 1
+worker_node_desired_size      = 0
 
 # RDS - single-AZ micro instance
 db_instance_class               = "db.t4g.micro"
@@ -30,3 +30,7 @@ enable_rds_performance_insights = false
 
 # S3
 enable_s3_versioning = false
+
+# Tags
+cost_center = "billing"
+

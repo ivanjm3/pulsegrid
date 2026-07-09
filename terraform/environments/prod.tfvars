@@ -26,3 +26,7 @@ db_multi_az                     = true
 enable_rds_performance_insights = true
 
 enable_s3_versioning = true
+
+# Tags
+cost_center = "billing"
+

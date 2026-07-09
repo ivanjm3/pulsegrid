@@ -76,8 +76,8 @@ spec:
     name: pulsegrid-worker
   pollingInterval: 15
   cooldownPeriod: 300
-  minReplicaCount: 1
-  maxReplicaCount: 100
+  minReplicaCount: 0
+  maxReplicaCount: 30
   triggers:
     - type: kafka
       metadata:

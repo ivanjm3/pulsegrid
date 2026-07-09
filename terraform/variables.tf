@@ -195,3 +195,10 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "cost_center" {
+  description = "Cost center billing tag"
+  type        = string
+  default     = "billing"
+}
+
