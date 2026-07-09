@@ -4,6 +4,8 @@
 *.dll
 *.so
 *.dylib
+interview-notes.md
+requirements-mapping.md
 
 # Test binary
 *.test
