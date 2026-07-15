@@ -4,6 +4,12 @@ Pulsegrid is a distributed video transcoding platform built in Go. Clients uploa
 
 The system is designed to be testable end to end. The repository includes unit tests, integration tests, a load-test harness, Kubernetes manifests, Terraform infrastructure, Grafana dashboards, and Prometheus alert rules.
 
+## Prerequisites
+
+- Go 1.25+
+- `ffmpeg` on `PATH` (worker shells out to it for all transcodes; verify with `ffmpeg -version`)
+- PostgreSQL, Kafka, and S3-compatible storage for full local/integration runs (see [Local Development](#local-development))
+
 ## High-Level Flow
 
 1. Client submits `POST /videos/upload` with a multipart form body.
@@ -210,6 +216,12 @@ terraform apply -var-file=environments/dev.tfvars -var="db_password=<secret>"
 The repository includes a full lifecycle integration test in [test/integration/full_lifecycle_test.go](test/integration/full_lifecycle_test.go) and a 100-job load-style validation in [cmd/load-test/harness_test.go](cmd/load-test/harness_test.go).
 
 These checks verify the system from upload through worker processing, status query, metrics emission, and output upload.
+
+[test/integration/ffmpeg_e2e_test.go](test/integration/ffmpeg_e2e_test.go) runs a real (non-mocked) `ffmpeg` transcode against the `sample.mp4` fixture, confirming `ffmpeg` is installed and produces a valid rendition end to end:
+
+```bash
+go test ./test/integration -run TestE2E_RealFFmpegTranscode -v
+```
 
 ## Requirements and Design Docs
 
