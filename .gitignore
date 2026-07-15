@@ -22,3 +22,5 @@ requirements-mapping.md
 # OS
 .DS_Store
 Thumbs.db
+terraform.tfvars
+.claude/.demo-env

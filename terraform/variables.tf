@@ -61,7 +61,7 @@ variable "enable_nat_gateway" {
 variable "eks_cluster_version" {
   description = "Kubernetes version for EKS cluster"
   type        = string
-  default     = "1.29"
+  default     = "1.31"
 }
 
 variable "enable_eks_control_plane_logs" {
@@ -97,7 +97,7 @@ variable "api_node_desired_size" {
 variable "worker_node_instance_types" {
   description = "Instance types for worker node group (ffmpeg workloads)"
   type        = list(string)
-  default     = ["t3.large"]
+  default     = ["t3.small"]
 }
 
 variable "worker_node_capacity_type" {

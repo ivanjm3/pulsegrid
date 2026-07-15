@@ -595,7 +595,7 @@ func defaultRenditions() []pkg.Rendition {
 	return []pkg.Rendition{
 		{ID: "720p", Resolution: "1280x720", VideoCodec: "libx264", VideoBitrate: "5M", AudioCodec: "aac", AudioBitrate: "128k"},
 		{ID: "480p", Resolution: "854x480", VideoCodec: "libx264", VideoBitrate: "2.5M", AudioCodec: "aac", AudioBitrate: "96k"},
-		{ID: "hls", Type: "hls_segments", SegmentDuration: 6, BaseResolution: "720p"},
+		{ID: "hls", Type: "hls_segments", SegmentDuration: 6, BaseResolution: "1280x720"},
 	}
 }
 
