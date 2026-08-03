@@ -95,6 +95,20 @@ func (f *fakeStore) DeleteJob(ctx context.Context, jobID string) error {
 	return nil
 }
 
+// fakeMetrics is a test double for UploadMetrics, recording call counts and
+// the last observed duration.
+type fakeMetrics struct {
+	submittedCalls int
+	durationCalls  int
+	lastDuration   float64
+}
+
+func (f *fakeMetrics) IncJobsSubmitted() { f.submittedCalls++ }
+func (f *fakeMetrics) ObserveUploadDuration(seconds float64) {
+	f.durationCalls++
+	f.lastDuration = seconds
+}
+
 // testHandlerDeps bundles the fakes behind a freshly built UploadHandler so
 // individual tests can assert on call counts/ordering.
 type testHandlerDeps struct {
@@ -102,6 +116,7 @@ type testHandlerDeps struct {
 	uploader *fakeUploader
 	queue    *fakeQueue
 	store    *fakeStore
+	metrics  *fakeMetrics
 }
 
 func newTestHandler() *testHandlerDeps {
@@ -109,8 +124,9 @@ func newTestHandler() *testHandlerDeps {
 		uploader: &fakeUploader{},
 		queue:    &fakeQueue{},
 		store:    newFakeStore(),
+		metrics:  &fakeMetrics{},
 	}
-	d.handler = NewUploadHandler(d.uploader, d.queue, d.store, "pulsegrid-output")
+	d.handler = NewUploadHandler(d.uploader, d.queue, d.store, "pulsegrid-output", d.metrics)
 	return d
 }
 
@@ -186,6 +202,37 @@ func TestUploadHandler_ValidRequest_Returns202(t *testing.T) {
 	}
 	if got := d.store.jobs[resp.JobID].Status; got != pkg.JobStatusSubmitted {
 		t.Errorf("final job status = %q, want %q", got, pkg.JobStatusSubmitted)
+	}
+
+	if d.metrics.submittedCalls != 1 {
+		t.Errorf("metrics.IncJobsSubmitted called %d times, want 1", d.metrics.submittedCalls)
+	}
+	if d.metrics.durationCalls != 1 {
+		t.Errorf("metrics.ObserveUploadDuration called %d times, want 1", d.metrics.durationCalls)
+	}
+	if d.metrics.lastDuration < 0 {
+		t.Errorf("observed upload duration %v, want >= 0", d.metrics.lastDuration)
+	}
+}
+
+func TestUploadHandler_KafkaPublishFails_NoMetricsEmitted(t *testing.T) {
+	d := newTestHandler()
+	d.queue.enqueueFn = func(ctx context.Context, job pkg.Job) error {
+		return errors.New("kafka unavailable")
+	}
+	req := multipartRequest(t, map[string]string{"source_name": "clip.mp4"}, []byte("fake video bytes"))
+	rec := httptest.NewRecorder()
+
+	d.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+	if d.metrics.submittedCalls != 0 {
+		t.Errorf("metrics.IncJobsSubmitted called %d times, want 0 on failure", d.metrics.submittedCalls)
+	}
+	if d.metrics.durationCalls != 0 {
+		t.Errorf("metrics.ObserveUploadDuration called %d times, want 0 on failure", d.metrics.durationCalls)
 	}
 }
 

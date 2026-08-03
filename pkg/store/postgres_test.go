@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/rand"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -119,11 +120,62 @@ func (f *fakeDB) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comm
 }
 
 func (f *fakeDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if strings.Contains(sql, "SELECT COUNT(*)") {
+		return &fakeCountRow{count: len(f.jobs)}
+	}
 	if strings.Contains(sql, "FROM jobs") {
 		row, exists := f.jobs[args[0].(string)]
 		return &fakeRow{row: row, ok: exists}
 	}
 	return &fakeRow{ok: false}
+}
+
+// fakeCountRow implements pgx.Row for a single COUNT(*) column.
+type fakeCountRow struct{ count int }
+
+func (r *fakeCountRow) Scan(dest ...any) error {
+	*(dest[0].(*int)) = r.count
+	return nil
+}
+
+// fakeRows implements pgx.Rows over a fixed slice of jobs rows, for ListJobs.
+type fakeRows struct {
+	rows []fakeJobRow
+	i    int
+}
+
+func (r *fakeRows) Next() bool {
+	if r.i >= len(r.rows) {
+		return false
+	}
+	r.i++
+	return true
+}
+
+func (r *fakeRows) Scan(dest ...any) error {
+	row := r.rows[r.i-1]
+	*(dest[0].(*string)) = row.jobID
+	*(dest[1].(*string)) = row.status
+	*(dest[2].(*time.Time)) = row.submissionTime
+	*(dest[3].(**time.Time)) = row.completionTime
+	return nil
+}
+
+func (r *fakeRows) Err() error                                   { return nil }
+func (r *fakeRows) Close()                                       {}
+func (r *fakeRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
+func (r *fakeRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
+func (r *fakeRows) Values() ([]any, error)                       { return nil, nil }
+func (r *fakeRows) RawValues() [][]byte                          { return nil }
+func (r *fakeRows) Conn() *pgx.Conn                              { return nil }
+
+func (f *fakeDB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	rows := make([]fakeJobRow, 0, len(f.jobs))
+	for _, row := range f.jobs {
+		rows = append(rows, row)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].submissionTime.After(rows[j].submissionTime) })
+	return &fakeRows{rows: rows}, nil
 }
 
 func TestRecordJobMetadata_InsertsRow(t *testing.T) {
@@ -185,6 +237,33 @@ func TestUpdateJobStatus_ChangesStatus(t *testing.T) {
 	}
 	if got.Status != pkg.JobStatusSubmitted {
 		t.Fatalf("expected status %q, got %q", pkg.JobStatusSubmitted, got.Status)
+	}
+}
+
+func TestListJobs_ReturnsInsertedJobsWithTotal(t *testing.T) {
+	db := newFakeDB()
+	s := NewStore(db)
+	ctx := context.Background()
+
+	jobs := []pkg.Job{
+		{ID: "11111111-1111-4111-8111-111111111111", SourceName: "a.mp4", SourceS3URI: "s3://x/a", OutputS3Prefix: "s3://y/a/", Status: pkg.JobStatusCompleted, Renditions: []pkg.Rendition{}, SubmissionTime: time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC)},
+		{ID: "22222222-2222-4222-8222-222222222222", SourceName: "b.mp4", SourceS3URI: "s3://x/b", OutputS3Prefix: "s3://y/b/", Status: pkg.JobStatusFailed, Renditions: []pkg.Rendition{}, SubmissionTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)},
+	}
+	for _, j := range jobs {
+		if err := s.RecordJobMetadata(ctx, j); err != nil {
+			t.Fatalf("RecordJobMetadata: %v", err)
+		}
+	}
+
+	results, total, err := s.ListJobs(ctx, JobFilter{Limit: 100, Offset: 0})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("total = %d, want 2", total)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results = %d, want 2", len(results))
 	}
 }
 

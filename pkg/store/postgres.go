@@ -26,6 +26,7 @@ var backoffSchedule = []time.Duration{1 * time.Second, 2 * time.Second, 4 * time
 type DB interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
 // Store persists job metadata and status events to Postgres.
@@ -145,6 +146,93 @@ func (s *Store) GetJob(ctx context.Context, jobID string) (pkg.Job, error) {
 		return pkg.Job{}, fmt.Errorf("get job %s: unmarshal renditions: %w", jobID, err)
 	}
 	return job, nil
+}
+
+// JobFilter constrains a ListJobs query.
+type JobFilter struct {
+	SubmittedAfter  *time.Time
+	SubmittedBefore *time.Time
+	Statuses        []pkg.JobStatus
+	Limit           int
+	Offset          int
+}
+
+// JobSummary is a single row of a ListJobs result.
+type JobSummary struct {
+	ID             string
+	Status         pkg.JobStatus
+	SubmissionTime time.Time
+	CompletionTime *time.Time
+}
+
+// ListJobs queries the jobs table for rows matching filter, ordered by
+// submission_time descending, along with the total count of matching rows
+// (ignoring limit/offset).
+func (s *Store) ListJobs(ctx context.Context, filter JobFilter) ([]JobSummary, int, error) {
+	where := []string{"1=1"}
+	args := []any{}
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+
+	if filter.SubmittedAfter != nil {
+		where = append(where, "submission_time >= "+arg(filter.SubmittedAfter.UTC()))
+	}
+	if filter.SubmittedBefore != nil {
+		where = append(where, "submission_time <= "+arg(filter.SubmittedBefore.UTC()))
+	}
+	if len(filter.Statuses) > 0 {
+		statuses := make([]string, len(filter.Statuses))
+		for i, st := range filter.Statuses {
+			statuses[i] = string(st)
+		}
+		where = append(where, "status = ANY("+arg(statuses)+")")
+	}
+	whereClause := ""
+	for i, w := range where {
+		if i > 0 {
+			whereClause += " AND "
+		}
+		whereClause += w
+	}
+
+	var total int
+	countSQL := "SELECT COUNT(*) FROM jobs WHERE " + whereClause
+	if err := s.db.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("list jobs: count: %w", err)
+	}
+
+	limitArg := arg(filter.Limit)
+	offsetArg := arg(filter.Offset)
+	querySQL := "SELECT job_id, status, submission_time, completion_time FROM jobs WHERE " + whereClause +
+		" ORDER BY submission_time DESC LIMIT " + limitArg + " OFFSET " + offsetArg
+
+	rows, err := s.db.Query(ctx, querySQL, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list jobs: query: %w", err)
+	}
+	defer rows.Close()
+
+	var results []JobSummary
+	for rows.Next() {
+		var (
+			js             JobSummary
+			status         string
+			completionTime *time.Time
+		)
+		if err := rows.Scan(&js.ID, &status, &js.SubmissionTime, &completionTime); err != nil {
+			return nil, 0, fmt.Errorf("list jobs: scan: %w", err)
+		}
+		js.Status = pkg.JobStatus(status)
+		js.CompletionTime = completionTime
+		results = append(results, js)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("list jobs: rows: %w", err)
+	}
+
+	return results, total, nil
 }
 
 // RecordStatusEvent inserts an event into the job_status_events table.

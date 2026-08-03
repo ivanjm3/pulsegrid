@@ -7,15 +7,21 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"pulsegrid/pkg/api"
+	"pulsegrid/pkg/metrics"
 	"pulsegrid/pkg/queue"
 	"pulsegrid/pkg/storage"
 	"pulsegrid/pkg/store"
 )
+
+// queueDepthPollInterval is how often the /metrics queue depth gauge is
+// refreshed from the Kafka admin API.
+const queueDepthPollInterval = 30 * time.Second
 
 func main() {
 	ctx := context.Background()
@@ -41,18 +47,55 @@ func main() {
 	defer pool.Close()
 	db := store.NewStore(pool)
 
-	uploadHandler := api.NewUploadHandler(uploader, producer, db, outputBucket)
+	m := metrics.New()
+
+	uploadHandler := api.NewUploadHandler(uploader, producer, db, outputBucket, m)
 	manifests := storage.NewDownloader(s3Client, outputBucket)
 	statusHandler := api.NewStatusHandler(db, manifests)
+	jobsListHandler := api.NewJobsListHandler(db)
+
+	go pollQueueDepth(ctx, brokers, m)
 
 	mux := http.NewServeMux()
 	mux.Handle("/videos/upload", uploadHandler)
 	mux.Handle("GET /jobs/{job_id}", statusHandler)
+	mux.Handle("GET /jobs", jobsListHandler)
+
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("GET /metrics", m.Handler())
+	go func() {
+		const metricsAddr = ":8081"
+		log.Printf("pulsegrid api metrics listening on %s", metricsAddr)
+		if err := http.ListenAndServe(metricsAddr, metricsMux); err != nil {
+			log.Fatal(err)
+		}
+	}()
 
 	const addr = ":8080"
 	log.Printf("pulsegrid api server listening on %s", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
+	}
+}
+
+// pollQueueDepth refreshes the queue depth gauge from the Kafka admin API
+// every queueDepthPollInterval. It runs until ctx is cancelled.
+func pollQueueDepth(ctx context.Context, brokers []string, m *metrics.Metrics) {
+	ticker := time.NewTicker(queueDepthPollInterval)
+	defer ticker.Stop()
+	for {
+		depth, err := queue.QueueDepth(ctx, brokers)
+		if err != nil {
+			log.Printf("event=queue_depth_poll_failed error=%v", err)
+		} else {
+			m.SetQueueDepth(float64(depth))
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
 

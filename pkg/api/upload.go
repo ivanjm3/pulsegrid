@@ -36,6 +36,13 @@ type JobStore interface {
 	DeleteJob(ctx context.Context, jobID string) error
 }
 
+// UploadMetrics records Prometheus metrics for the upload handler. Satisfied
+// by *pkg/metrics.Metrics.
+type UploadMetrics interface {
+	IncJobsSubmitted()
+	ObserveUploadDuration(seconds float64)
+}
+
 // ErrorResponse is the structured error body returned for failed requests.
 type ErrorResponse struct {
 	Error     string `json:"error"`
@@ -76,24 +83,28 @@ type UploadHandler struct {
 	Queue          JobEnqueuer
 	Store          JobStore
 	OutputBucket   string
+	Metrics        UploadMetrics
 }
 
 // NewUploadHandler returns an UploadHandler wired to uploader, queue, and
 // store, with the default upload size limit. outputBucket names the S3
-// bucket transcoded outputs will eventually be written to.
-func NewUploadHandler(uploader SourceUploader, queue JobEnqueuer, store JobStore, outputBucket string) *UploadHandler {
+// bucket transcoded outputs will eventually be written to. metrics may be
+// nil, in which case no metrics are emitted.
+func NewUploadHandler(uploader SourceUploader, queue JobEnqueuer, store JobStore, outputBucket string, metrics UploadMetrics) *UploadHandler {
 	return &UploadHandler{
 		MaxUploadBytes: DefaultMaxUploadBytes,
 		Uploader:       uploader,
 		Queue:          queue,
 		Store:          store,
 		OutputBucket:   outputBucket,
+		Metrics:        metrics,
 	}
 }
 
 func (h *UploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requestID := newRequestID()
 	w.Header().Set("X-Request-Id", requestID)
+	start := time.Now()
 
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", "", requestID)
@@ -162,6 +173,11 @@ func (h *UploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// operator to reconcile instead of failing an already-queued job.
 	if err := h.Store.UpdateJobStatus(ctx, job.ID, pkg.JobStatusSubmitted); err != nil {
 		log.Printf("ALERT job_id=%s request_id=%s event=db_status_update_failed error=%v — job is in Kafka but DB still shows 'submitting', operator must investigate", jobID, requestID, err)
+	}
+
+	if h.Metrics != nil {
+		h.Metrics.IncJobsSubmitted()
+		h.Metrics.ObserveUploadDuration(time.Since(start).Seconds())
 	}
 
 	resp := UploadResponse{

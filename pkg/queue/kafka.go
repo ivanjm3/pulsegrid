@@ -133,3 +133,37 @@ func (p *Producer) EnqueueJob(ctx context.Context, job pkg.Job) error {
 func (p *Producer) Close() error {
 	return p.writer.Close()
 }
+
+// QueueDepth queries the Kafka admin API for the transcoding-jobs topic's
+// partitions and returns the sum of their log-end offsets (high watermarks).
+// This approximates queue depth as total unconsumed messages; it is not true
+// consumer-group lag since no consumer group exists yet (see task 9.2 —
+// deferred until the worker consumer, task 12, is in place).
+func QueueDepth(ctx context.Context, brokers []string) (int64, error) {
+	conn, err := kafka.DialContext(ctx, "tcp", brokers[0])
+	if err != nil {
+		return 0, fmt.Errorf("queue depth: dial: %w", err)
+	}
+	defer conn.Close()
+
+	partitions, err := conn.ReadPartitions(Topic)
+	if err != nil {
+		return 0, fmt.Errorf("queue depth: read partitions: %w", err)
+	}
+
+	var total int64
+	for _, p := range partitions {
+		pconn, err := kafka.DialLeader(ctx, "tcp", p.Leader.Host+fmt.Sprintf(":%d", p.Leader.Port), Topic, p.ID)
+		if err != nil {
+			return 0, fmt.Errorf("queue depth: dial partition %d leader: %w", p.ID, err)
+		}
+		lastOffset, err := pconn.ReadLastOffset()
+		pconn.Close()
+		if err != nil {
+			return 0, fmt.Errorf("queue depth: read last offset partition %d: %w", p.ID, err)
+		}
+		total += lastOffset
+	}
+
+	return total, nil
+}
