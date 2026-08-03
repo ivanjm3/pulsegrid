@@ -54,12 +54,17 @@ func main() {
 	statusHandler := api.NewStatusHandler(db, manifests)
 	jobsListHandler := api.NewJobsListHandler(db)
 
+	kafkaPinger := &queue.Pinger{Brokers: brokers}
+	bucketPinger := storage.NewBucketPinger(s3Client, sourceBucket)
+	healthHandler := api.NewHealthHandler(kafkaPinger, pool, bucketPinger)
+
 	go pollQueueDepth(ctx, brokers, m)
 
 	mux := http.NewServeMux()
 	mux.Handle("/videos/upload", uploadHandler)
 	mux.Handle("GET /jobs/{job_id}", statusHandler)
 	mux.Handle("GET /jobs", jobsListHandler)
+	mux.Handle("GET /health", healthHandler)
 
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("GET /metrics", m.Handler())

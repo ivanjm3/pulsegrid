@@ -108,3 +108,30 @@ func isPermanentUploadError(err error) bool {
 	}
 	return false
 }
+
+// HeadBucketAPIClient is the subset of *s3.Client used to check bucket
+// reachability, allowing tests to substitute a fake.
+type HeadBucketAPIClient interface {
+	HeadBucket(ctx context.Context, params *s3.HeadBucketInput, optFns ...func(*s3.Options)) (*s3.HeadBucketOutput, error)
+}
+
+// BucketPinger checks S3 connectivity for health checks by confirming a
+// bucket is reachable.
+type BucketPinger struct {
+	api    HeadBucketAPIClient
+	bucket string
+}
+
+// NewBucketPinger returns a BucketPinger that checks bucket via api.
+func NewBucketPinger(api HeadBucketAPIClient, bucket string) *BucketPinger {
+	return &BucketPinger{api: api, bucket: bucket}
+}
+
+// Ping confirms the configured bucket is reachable.
+func (b *BucketPinger) Ping(ctx context.Context) error {
+	_, err := b.api.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: &b.bucket})
+	if err != nil {
+		return fmt.Errorf("ping s3 bucket %s: %w", b.bucket, err)
+	}
+	return nil
+}

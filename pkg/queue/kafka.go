@@ -134,6 +134,21 @@ func (p *Producer) Close() error {
 	return p.writer.Close()
 }
 
+// Pinger checks broker reachability for health checks.
+type Pinger struct {
+	Brokers []string
+}
+
+// Ping dials the first configured broker and closes the connection
+// immediately. A successful dial confirms the broker is reachable.
+func (p *Pinger) Ping(ctx context.Context) error {
+	conn, err := kafka.DialContext(ctx, "tcp", p.Brokers[0])
+	if err != nil {
+		return fmt.Errorf("ping kafka: %w", err)
+	}
+	return conn.Close()
+}
+
 // QueueDepth queries the Kafka admin API for the transcoding-jobs topic's
 // partitions and returns the sum of their log-end offsets (high watermarks).
 // This approximates queue depth as total unconsumed messages; it is not true
