@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"testing"
 
@@ -54,7 +55,7 @@ func newTestLifecycleHandler() (*LifecycleHandler, *fakeRetryPublisher, *fakeDLQ
 	retry := &fakeRetryPublisher{}
 	dlq := &fakeDLQPublisher{}
 	store := &fakeStatusRecorder{}
-	h := NewLifecycleHandler(retry, dlq, store, metrics.NewWorker(), "worker-pod-test")
+	h := NewLifecycleHandler(retry, dlq, store, metrics.NewWorker(), "worker-pod-test", NewLogger(io.Discard))
 	return h, retry, dlq, store
 }
 

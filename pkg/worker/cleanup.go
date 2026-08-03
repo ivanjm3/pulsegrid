@@ -1,7 +1,7 @@
 package worker
 
 import (
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 )
@@ -10,11 +10,11 @@ import (
 // processing, on both the success and failure paths (task 19). Deletion
 // errors (e.g. permissions) are logged, not returned: cleanup is best-effort
 // and must never fail job processing.
-func CleanupTempDir(jobID string) {
+func CleanupTempDir(logger *slog.Logger, podID, jobID string) {
 	dir := filepath.Join(os.TempDir(), jobID)
 	if err := os.RemoveAll(dir); err != nil {
-		log.Printf("event=temp_cleanup_failed job_id=%s dir=%s error=%v", jobID, dir, err)
+		LogJobError(logger, "temp_cleanup_failed", jobID, podID, err, 0, "", "")
 		return
 	}
-	log.Printf("event=temp_cleanup_complete job_id=%s dir=%s", jobID, dir)
+	logger.Info("temp_cleanup_complete", "job_id", jobID, "pod_id", podID, "event_type", "temp_cleanup_complete", "dir", dir)
 }

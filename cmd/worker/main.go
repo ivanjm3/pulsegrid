@@ -7,11 +7,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -59,15 +62,29 @@ func main() {
 
 	m := metrics.NewWorker()
 	podID := envOrDefault("HOSTNAME", "unknown")
-	lifecycle := worker.NewLifecycleHandler(retryProducer, dlqProducer, db, m, podID)
+	logger := worker.NewLogger(os.Stderr)
+	lifecycle := worker.NewLifecycleHandler(retryProducer, dlqProducer, db, m, podID, logger)
 
 	handler := &jobHandler{
 		downloader: downloader,
 		transcoder: transcoder,
 		uploader:   uploader,
 		lifecycle:  lifecycle,
+		metrics:    m,
+		logger:     logger,
+		podID:      podID,
 	}
 	consumer := worker.NewConsumer(reader, handler)
+
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("GET /metrics", m.Handler())
+	go func() {
+		const metricsAddr = ":8081"
+		log.Printf("pulsegrid worker metrics listening on %s", metricsAddr)
+		if err := http.ListenAndServe(metricsAddr, metricsMux); err != nil {
+			log.Fatal(err)
+		}
+	}()
 
 	log.Printf("pulsegrid worker starting: brokers=%v group=%s", brokers, worker.GroupID)
 	if err := consumer.Run(ctx); err != nil {
@@ -86,15 +103,18 @@ type jobHandler struct {
 	transcoder *worker.Transcoder
 	uploader   *storage.OutputUploader
 	lifecycle  *worker.LifecycleHandler
+	metrics    *metrics.WorkerMetrics
+	logger     *slog.Logger
+	podID      string
 }
 
 func (h *jobHandler) HandleJob(ctx context.Context, msg queue.JobMessage) error {
-	defer worker.CleanupTempDir(msg.JobID)
+	defer worker.CleanupTempDir(h.logger, h.podID, msg.JobID)
 
 	procErr := h.process(ctx, msg)
 	if procErr == nil {
 		if err := h.lifecycle.HandleSuccess(ctx, msg); err != nil {
-			log.Printf("event=record_status_event_failed job_id=%s error=%v", msg.JobID, err)
+			worker.LogJobError(h.logger, "record_status_event_failed", msg.JobID, h.podID, err, msg.RetryCount, "", "")
 		}
 		log.Printf("event=job_completed job_id=%s", msg.JobID)
 		return nil
@@ -102,7 +122,7 @@ func (h *jobHandler) HandleJob(ctx context.Context, msg queue.JobMessage) error 
 
 	outcome, err := h.lifecycle.HandleFailure(ctx, msg, procErr)
 	if err != nil {
-		log.Printf("event=lifecycle_handling_failed job_id=%s error=%v", msg.JobID, err)
+		worker.LogJobError(h.logger, "lifecycle_handling_failed", msg.JobID, h.podID, err, msg.RetryCount, "", "")
 		return err
 	}
 
@@ -135,11 +155,13 @@ func (h *jobHandler) process(ctx context.Context, msg queue.JobMessage) error {
 	var outFiles []storage.OutputFile
 
 	for _, r := range job.Renditions {
+		start := time.Now()
 		if r.HLS {
 			res, err := h.transcoder.TranscodeHLS(ctx, msg.JobID, sourcePath, destDir, r)
 			if err != nil {
 				return err
 			}
+			h.metrics.ObserveTranscodeDuration(r.ID, time.Since(start).Seconds())
 			hlsResults[r.ID] = res
 
 			segments, err := filepath.Glob(filepath.Join(filepath.Dir(res.PlaylistPath), "*.ts"))
@@ -165,6 +187,7 @@ func (h *jobHandler) process(ctx context.Context, msg queue.JobMessage) error {
 		if err != nil {
 			return err
 		}
+		h.metrics.ObserveTranscodeDuration(r.ID, time.Since(start).Seconds())
 		singleResults[r.ID] = res
 		outFiles = append(outFiles, storage.OutputFile{
 			LocalPath: res.FilePath,

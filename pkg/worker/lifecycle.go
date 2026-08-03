@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -131,12 +131,13 @@ type LifecycleHandler struct {
 	store   StatusRecorder
 	metrics *metrics.WorkerMetrics
 	podID   string
+	logger  *slog.Logger
 }
 
 // NewLifecycleHandler returns a LifecycleHandler wired to retry, dlq, and
-// store, reporting events under podID.
-func NewLifecycleHandler(retry RetryPublisher, dlq DLQPublisher, store StatusRecorder, m *metrics.WorkerMetrics, podID string) *LifecycleHandler {
-	return &LifecycleHandler{retry: retry, dlq: dlq, store: store, metrics: m, podID: podID}
+// store, reporting events under podID and logging errors to logger.
+func NewLifecycleHandler(retry RetryPublisher, dlq DLQPublisher, store StatusRecorder, m *metrics.WorkerMetrics, podID string, logger *slog.Logger) *LifecycleHandler {
+	return &LifecycleHandler{retry: retry, dlq: dlq, store: store, metrics: m, podID: podID, logger: logger}
 }
 
 // HandleSuccess records a job's successful completion.
@@ -155,9 +156,16 @@ func (h *LifecycleHandler) HandleFailure(ctx context.Context, msg queue.JobMessa
 	class := ClassifyError(procErr)
 	h.metrics.IncTranscodeFailure(string(class))
 
+	failureEventType := "job_failed"
+	if class == ErrorClassConstraint {
+		failureEventType = "pod_resource_constrained"
+		h.metrics.IncPodResourceConstrained()
+	}
+	LogJobError(h.logger, failureEventType, msg.JobID, h.podID, procErr, msg.RetryCount, class, stderrSnippet(procErr))
+
 	if class == ErrorClassConstraint {
 		if err := h.recordEvent(ctx, msg.JobID, "pod_resource_constrained", procErr, class); err != nil {
-			log.Printf("event=record_status_event_failed job_id=%s error=%v", msg.JobID, err)
+			LogJobError(h.logger, "record_status_event_failed", msg.JobID, h.podID, err, msg.RetryCount, class, "")
 		}
 		return OutcomeConstrained, nil
 	}
@@ -167,7 +175,7 @@ func (h *LifecycleHandler) HandleFailure(ctx context.Context, msg queue.JobMessa
 			return "", fmt.Errorf("handle failure: send to dlq: %w", err)
 		}
 		if err := h.recordEvent(ctx, msg.JobID, "job_failed", procErr, class); err != nil {
-			log.Printf("event=record_status_event_failed job_id=%s error=%v", msg.JobID, err)
+			LogJobError(h.logger, "record_status_event_failed", msg.JobID, h.podID, err, msg.RetryCount, class, "")
 		}
 		return OutcomeDLQd, nil
 	}
@@ -176,7 +184,7 @@ func (h *LifecycleHandler) HandleFailure(ctx context.Context, msg queue.JobMessa
 		return "", fmt.Errorf("handle failure: retry enqueue: %w", err)
 	}
 	if err := h.recordEvent(ctx, msg.JobID, "job_failed", procErr, class); err != nil {
-		log.Printf("event=record_status_event_failed job_id=%s error=%v", msg.JobID, err)
+		LogJobError(h.logger, "record_status_event_failed", msg.JobID, h.podID, err, msg.RetryCount, class, "")
 	}
 	return OutcomeRetried, nil
 }

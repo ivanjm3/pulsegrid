@@ -2,6 +2,7 @@ package worker
 
 import (
 	"fmt"
+	"io"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -21,7 +22,7 @@ func TestCleanupTempDir_RemovesStagingDirectory(t *testing.T) {
 		jobID := fmt.Sprintf("cleanup-success-%d-%d", i, rnd.Int())
 		mustCreateJobTempFiles(t, jobID, rnd)
 
-		CleanupTempDir(jobID)
+		CleanupTempDir(NewLogger(io.Discard), "worker-pod-test", jobID)
 
 		if _, err := os.Stat(filepath.Join(os.TempDir(), jobID)); !os.IsNotExist(err) {
 			t.Fatalf("job %s: temp dir still exists after cleanup (success path): err=%v", jobID, err)
@@ -34,7 +35,7 @@ func TestCleanupTempDir_RemovesStagingDirectory(t *testing.T) {
 		jobID := fmt.Sprintf("cleanup-failure-%d-%d", i, rnd.Int())
 		mustCreateJobTempFiles(t, jobID, rnd)
 
-		CleanupTempDir(jobID)
+		CleanupTempDir(NewLogger(io.Discard), "worker-pod-test", jobID)
 
 		if _, err := os.Stat(filepath.Join(os.TempDir(), jobID)); !os.IsNotExist(err) {
 			t.Fatalf("job %s: temp dir still exists after cleanup (failure path): err=%v", jobID, err)
@@ -45,7 +46,7 @@ func TestCleanupTempDir_RemovesStagingDirectory(t *testing.T) {
 func TestCleanupTempDir_MissingDirectoryIsNotAnError(t *testing.T) {
 	// A job that failed before any staging happened (e.g. download never
 	// created the dir) must not cause cleanup to panic or error out loudly.
-	CleanupTempDir("job-that-never-staged-anything")
+	CleanupTempDir(NewLogger(io.Discard), "worker-pod-test", "job-that-never-staged-anything")
 }
 
 // mustCreateJobTempFiles creates a random number of nested files under

@@ -55,6 +55,13 @@ func NewTranscoder() *Transcoder {
 	}
 }
 
+// SetFFmpegPath overrides the ffmpeg binary path, letting callers outside
+// this package (e.g. end-to-end tests) point the Transcoder at a fake
+// ffmpeg script.
+func (t *Transcoder) SetFFmpegPath(path string) {
+	t.ffmpegPath = path
+}
+
 // TranscodeSingleRendition runs ffmpeg against sourceFile to produce a
 // single MP4 rendition inside destDir. On a non-zero ffmpeg exit code it
 // returns a *pkg.TranscodingError carrying the captured stderr.
