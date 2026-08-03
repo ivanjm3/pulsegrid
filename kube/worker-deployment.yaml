@@ -1,0 +1,81 @@
+# Base replica count is 1 — KEDA (worker-scaledobject.yaml) owns scaling from
+# here based on transcoding-jobs consumer lag. Probes hit GET /metrics (the
+# only HTTP endpoint the worker binary exposes — cmd/worker/main.go registers
+# no /health route, unlike design.md's aspirational health-check.sh script,
+# which doesn't exist in this repo) as a liveness/readiness signal instead.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pulsegrid-worker
+  namespace: pulsegrid
+  labels:
+    app: pulsegrid-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pulsegrid-worker
+  template:
+    metadata:
+      labels:
+        app: pulsegrid-worker
+    spec:
+      serviceAccountName: pulsegrid-worker
+      terminationGracePeriodSeconds: 300
+      containers:
+      - name: worker
+        image: pulsegrid/pulsegrid-worker:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: metrics
+          containerPort: 8081
+        envFrom:
+        - configMapRef:
+            name: pulsegrid-config
+        - secretRef:
+            name: pulsegrid-db
+        env:
+        - name: HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        resources:
+          # Matches design.md's worker sizing (ffmpeg is CPU/RAM heavy). A
+          # free-tier-eligible t3.micro node (2 vCPU, 1 GiB) cannot satisfy
+          # this request — see terraform/main.tf and .spec/CHANGELOG.md for
+          # the tradeoff (dev node group sized for API + light load only;
+          # bump node_instance_type to run worker pods for real).
+          requests:
+            cpu: "2"
+            memory: 4Gi
+          limits:
+            cpu: "4"
+            memory: 8Gi
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: metrics
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: metrics
+          initialDelaySeconds: 10
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pulsegrid-worker
+  namespace: pulsegrid
+  labels:
+    app: pulsegrid-worker
+spec:
+  selector:
+    app: pulsegrid-worker
+  ports:
+  - name: metrics
+    port: 8081
+    targetPort: 8081
+  type: ClusterIP

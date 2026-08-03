@@ -1,0 +1,26 @@
+# Requires the KEDA operator pre-installed in-cluster (design.md constraint —
+# not something these manifests install). consumerGroup/topic here must match
+# the compile-time constants worker.GroupID ("pulsegrid-workers") and
+# queue.Topic ("transcoding-jobs") in pkg/worker/consumer.go and
+# pkg/queue/kafka.go — not env-configurable in the current code.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: pulsegrid-worker-scaler
+  namespace: pulsegrid
+spec:
+  scaleTargetRef:
+    name: pulsegrid-worker
+  minReplicaCount: 1
+  maxReplicaCount: 20
+  cooldownPeriod: 300
+  triggers:
+  - type: kafka
+    metadata:
+      bootstrapServers: kafka-0.kafka.pulsegrid.svc.cluster.local:9092
+      consumerGroup: pulsegrid-workers
+      topic: transcoding-jobs
+      lagThreshold: "10"
+      offsetResetPolicy: "latest"
+    authModes:
+      - "none"

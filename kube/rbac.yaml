@@ -1,0 +1,46 @@
+# ServiceAccounts carry IRSA (IAM Roles for Service Accounts) annotations so
+# pods get S3 access via a scoped IAM role instead of long-lived AWS keys —
+# swap <ACCOUNT_ID> / role name for the roles Terraform creates
+# (see terraform/main.tf: aws_iam_role.api / aws_iam_role.worker).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pulsegrid-api
+  namespace: pulsegrid
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::<ACCOUNT_ID>:role/pulsegrid-api-dev"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pulsegrid-worker
+  namespace: pulsegrid
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::<ACCOUNT_ID>:role/pulsegrid-worker-dev"
+---
+# Worker pods only need to read their own pod info (nothing in the codebase
+# calls the Kubernetes API today) — kept minimal rather than granting
+# anything broader.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pulsegrid-worker
+  namespace: pulsegrid
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pulsegrid-worker
+  namespace: pulsegrid
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pulsegrid-worker
+subjects:
+- kind: ServiceAccount
+  name: pulsegrid-worker
+  namespace: pulsegrid

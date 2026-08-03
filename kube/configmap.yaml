@@ -1,0 +1,16 @@
+# Non-secret runtime config shared by api and worker. Values here match the
+# env vars actually read by cmd/api/main.go and cmd/worker/main.go — not the
+# design.md draft, which lists several vars (DB_HOST/DB_PORT/CONSUMER_GROUP/
+# JOB_TOPIC/MAX_RETRIES/VISIBILITY_TIMEOUT) that were never wired into code;
+# the DB DSN is one var (DB_DSN, from a Secret) and topic/consumer-group/
+# retry-max are compile-time constants (pkg/queue, pkg/worker), not env-driven.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pulsegrid-config
+  namespace: pulsegrid
+data:
+  KAFKA_BROKERS: "kafka-0.kafka.pulsegrid.svc.cluster.local:9092"
+  S3_BUCKET_SOURCE: "pulsegrid-source"
+  S3_BUCKET_OUTPUT: "pulsegrid-output"
+  AWS_REGION: "us-east-1"
