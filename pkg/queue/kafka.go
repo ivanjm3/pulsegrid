@@ -107,6 +107,16 @@ func (p *Producer) EnqueueJob(ctx context.Context, job pkg.Job) error {
 		Value: body,
 	}
 
+	if err := writeWithRetry(ctx, p.writer, p.sleep, kmsg); err != nil {
+		return fmt.Errorf("enqueue job: %w", err)
+	}
+	return nil
+}
+
+// writeWithRetry publishes kmsg via writer, retrying transient failures with
+// the shared exponential backoff schedule (500ms, 1s, 2s, 4s, 8s; max 5
+// attempts). Shared by Producer.EnqueueJob and DLQProducer.SendDLQ.
+func writeWithRetry(ctx context.Context, writer Writer, sleep func(time.Duration), kmsg kafka.Message) error {
 	var lastErr error
 	for attempt := 0; attempt < maxPublishAttempts; attempt++ {
 		if attempt > 0 {
@@ -116,17 +126,17 @@ func (p *Producer) EnqueueJob(ctx context.Context, job pkg.Job) error {
 				return ctx.Err()
 			default:
 			}
-			p.sleep(delay)
+			sleep(delay)
 		}
 
-		if err := p.writer.WriteMessages(ctx, kmsg); err != nil {
+		if err := writer.WriteMessages(ctx, kmsg); err != nil {
 			lastErr = err
 			continue
 		}
 		return nil
 	}
 
-	return fmt.Errorf("enqueue job: exhausted %d attempts: %w", maxPublishAttempts, lastErr)
+	return fmt.Errorf("exhausted %d attempts: %w", maxPublishAttempts, lastErr)
 }
 
 // Close closes the underlying writer.
