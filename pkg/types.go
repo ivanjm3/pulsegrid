@@ -36,15 +36,16 @@ type RetryConfig struct {
 
 // Job is the core unit of work submitted by a client.
 type Job struct {
-	ID             string      `json:"job_id"`
-	SourceName     string      `json:"source_name"`
-	SourceS3URI    string      `json:"source_s3_uri"`
-	OutputS3Prefix string      `json:"output_s3_prefix"`
-	Renditions     []Rendition `json:"renditions"`
-	Status         JobStatus   `json:"status"`
-	RetryCount     int         `json:"retry_count"`
-	SubmissionTime time.Time   `json:"submission_time"`
-	CompletionTime *time.Time  `json:"completion_time,omitempty"`
+	ID                  string      `json:"job_id"`
+	SourceName          string      `json:"source_name"`
+	SourceFileSizeBytes int64       `json:"source_file_size_bytes"`
+	SourceS3URI         string      `json:"source_s3_uri"`
+	OutputS3Prefix      string      `json:"output_s3_prefix"`
+	Renditions          []Rendition `json:"renditions"`
+	Status              JobStatus   `json:"status"`
+	RetryCount          int         `json:"retry_count"`
+	SubmissionTime      time.Time   `json:"submission_time"`
+	CompletionTime      *time.Time  `json:"completion_time,omitempty"`
 }
 
 // NewJobID generates an RFC 4122 version 4 UUID using crypto/rand.
