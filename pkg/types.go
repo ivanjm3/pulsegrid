@@ -60,10 +60,14 @@ type OutputFile struct {
 
 // Manifest is the worker-generated summary of a completed job's outputs,
 // stored at s3://{output-bucket}/{job_id}/manifest.json (see design.md task
-// 16). Only the fields the status endpoint needs are modeled here.
+// 16).
 type Manifest struct {
-	JobID       string       `json:"job_id"`
-	OutputFiles []OutputFile `json:"output_files"`
+	JobID          string       `json:"job_id"`
+	SourceFile     string       `json:"source_file"`
+	OutputFiles    []OutputFile `json:"output_files"`
+	GenerationTime string       `json:"generation_time"`
+	WorkerPodID    string       `json:"worker_pod_id"`
+	FFmpegVersion  string       `json:"ffmpeg_version"`
 }
 
 // NewJobID generates an RFC 4122 version 4 UUID using crypto/rand.
