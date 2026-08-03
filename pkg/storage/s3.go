@@ -12,13 +12,16 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
+
+	"pulsegrid/pkg"
 )
 
-// maxUploadAttempts and the backoff schedule match the design doc's retry
-// policy for S3 uploads: 1s, 2s, 4s, 8s, 16s (max 5 attempts).
-const maxUploadAttempts = 5
-
-var backoffSchedule = []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
+// maxUploadAttempts and uploadBaseDelay match the design doc's retry policy
+// for S3 uploads: 1s, 2s, 4s, 8s, 16s (max 5 attempts).
+const (
+	maxUploadAttempts = 5
+	uploadBaseDelay   = 1 * time.Second
+)
 
 // permanentErrorCodes are S3 error codes that should never be retried.
 var permanentErrorCodes = map[string]bool{
@@ -64,20 +67,9 @@ func (u *Uploader) UploadSource(ctx context.Context, jobID, sourceName string, b
 
 	uploader := manager.NewUploader(u.api)
 
-	var lastErr error
-	for attempt := 0; attempt < maxUploadAttempts; attempt++ {
-		if attempt > 0 {
-			delay := backoffSchedule[attempt-1]
-			select {
-			case <-ctx.Done():
-				return "", ctx.Err()
-			default:
-			}
-			u.sleep(delay)
-		}
-
+	err := pkg.RetryWithBackoff(ctx, maxUploadAttempts, uploadBaseDelay, u.sleep, func(ctx context.Context) error {
 		if _, err := body.Seek(0, io.SeekStart); err != nil {
-			return "", fmt.Errorf("upload source to s3: rewind body for retry: %w", err)
+			return pkg.Permanent(fmt.Errorf("rewind body for retry: %w", err))
 		}
 
 		_, err := uploader.Upload(ctx, &s3.PutObjectInput{
@@ -86,17 +78,15 @@ func (u *Uploader) UploadSource(ctx context.Context, jobID, sourceName string, b
 			Body:    body,
 			Tagging: &tagging,
 		})
-		if err == nil {
-			return fmt.Sprintf("s3://%s/%s", u.bucket, key), nil
+		if err != nil && isPermanentUploadError(err) {
+			return pkg.Permanent(err)
 		}
-
-		lastErr = err
-		if isPermanentUploadError(err) {
-			return "", fmt.Errorf("upload source to s3: %w", err)
-		}
+		return err
+	})
+	if err != nil {
+		return "", fmt.Errorf("upload source to s3: %w", err)
 	}
-
-	return "", fmt.Errorf("upload source to s3: exhausted %d attempts: %w", maxUploadAttempts, lastErr)
+	return fmt.Sprintf("s3://%s/%s", u.bucket, key), nil
 }
 
 // isPermanentUploadError reports whether err represents a non-retryable S3

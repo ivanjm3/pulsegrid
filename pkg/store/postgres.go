@@ -15,11 +15,12 @@ import (
 	"pulsegrid/pkg"
 )
 
-// maxConnectAttempts and the backoff schedule match the design doc's retry
+// maxConnectAttempts and connectBaseDelay match the design doc's retry
 // policy for database connections: 1s, 2s, 4s, 8s, 16s (max 5 attempts).
-const maxConnectAttempts = 5
-
-var backoffSchedule = []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
+const (
+	maxConnectAttempts = 5
+	connectBaseDelay   = 1 * time.Second
+)
 
 // DB is the subset of *pgxpool.Pool used by Store, allowing tests to
 // substitute a fake in-memory implementation.
@@ -42,30 +43,23 @@ func NewStore(db DB) *Store {
 // Connect opens a connection pool to dsn, retrying transient connection
 // errors with exponential backoff.
 func Connect(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
-	var lastErr error
-	for attempt := 0; attempt < maxConnectAttempts; attempt++ {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(backoffSchedule[attempt-1]):
-			}
-		}
-
-		pool, err := pgxpool.New(ctx, dsn)
+	var pool *pgxpool.Pool
+	err := pkg.RetryWithBackoff(ctx, maxConnectAttempts, connectBaseDelay, time.Sleep, func(ctx context.Context) error {
+		p, err := pgxpool.New(ctx, dsn)
 		if err != nil {
-			lastErr = err
-			continue
+			return err
 		}
-		if err := pool.Ping(ctx); err != nil {
-			pool.Close()
-			lastErr = err
-			continue
+		if err := p.Ping(ctx); err != nil {
+			p.Close()
+			return err
 		}
-		return pool, nil
+		pool = p
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("connect to postgres: %w", err)
 	}
-
-	return nil, fmt.Errorf("connect to postgres: exhausted %d attempts: %w", maxConnectAttempts, lastErr)
+	return pool, nil
 }
 
 // RecordJobMetadata inserts job into the jobs table with the given status.

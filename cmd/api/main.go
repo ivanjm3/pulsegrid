@@ -40,7 +40,12 @@ func main() {
 	producer := queue.NewProducer(writer)
 	defer producer.Close()
 
-	pool, err := store.Connect(ctx, os.Getenv("DB_DSN"))
+	dbDSN := os.Getenv("DB_DSN")
+	if err := store.RunMigrations(dbDSN); err != nil {
+		log.Fatalf("run migrations: %v", err)
+	}
+
+	pool, err := store.Connect(ctx, dbDSN)
 	if err != nil {
 		log.Fatalf("connect to postgres: %v", err)
 	}

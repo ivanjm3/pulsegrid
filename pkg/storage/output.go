@@ -10,14 +10,17 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+
+	"pulsegrid/pkg"
 )
 
-// maxOutputUploadAttempts and outputBackoffSchedule match the design doc's
-// retry policy used elsewhere for S3 operations: 1s, 2s, 4s, 8s, 16s (max 5
+// maxOutputUploadAttempts and outputBaseDelay match the design doc's retry
+// policy used elsewhere for S3 operations: 1s, 2s, 4s, 8s, 16s (max 5
 // attempts).
-const maxOutputUploadAttempts = 5
-
-var outputBackoffSchedule = []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
+const (
+	maxOutputUploadAttempts = 5
+	outputBaseDelay         = 1 * time.Second
+)
 
 // OutputAPIClient is the subset of *s3.Client used to upload job outputs and
 // clean up after a partial failure, allowing tests to substitute a fake.
@@ -95,22 +98,12 @@ func (u *OutputUploader) uploadFile(ctx context.Context, jobID, key, localPath, 
 
 	uploader := manager.NewUploader(u.api)
 
-	var lastErr error
-	for attempt := 0; attempt < maxOutputUploadAttempts; attempt++ {
-		if attempt > 0 {
-			delay := outputBackoffSchedule[attempt-1]
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-			u.sleep(delay)
-		}
-
+	err := pkg.RetryWithBackoff(ctx, maxOutputUploadAttempts, outputBaseDelay, u.sleep, func(ctx context.Context) error {
 		f, err := os.Open(localPath)
 		if err != nil {
-			return fmt.Errorf("open %s: %w", localPath, err)
+			return pkg.Permanent(fmt.Errorf("open %s: %w", localPath, err))
 		}
+		defer f.Close()
 
 		_, err = uploader.Upload(ctx, &s3.PutObjectInput{
 			Bucket:  &u.bucket,
@@ -118,19 +111,15 @@ func (u *OutputUploader) uploadFile(ctx context.Context, jobID, key, localPath, 
 			Body:    f,
 			Tagging: &tagging,
 		})
-		f.Close()
-
-		if err == nil {
-			return nil
+		if err != nil && isPermanentUploadError(err) {
+			return pkg.Permanent(err)
 		}
-
-		lastErr = err
-		if isPermanentUploadError(err) {
-			return fmt.Errorf("upload %s: %w", key, err)
-		}
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("upload %s: %w", key, err)
 	}
-
-	return fmt.Errorf("upload %s: exhausted %d attempts: %w", key, maxOutputUploadAttempts, lastErr)
+	return nil
 }
 
 // cleanup best-effort deletes previously uploaded objects after a partial

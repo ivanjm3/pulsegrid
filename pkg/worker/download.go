@@ -19,12 +19,13 @@ import (
 	"pulsegrid/pkg"
 )
 
-// maxDownloadAttempts and the backoff schedule match the design doc's retry
+// maxDownloadAttempts and downloadBaseDelay match the design doc's retry
 // policy used elsewhere for S3 operations: 1s, 2s, 4s, 8s, 16s (max 5
 // attempts).
-const maxDownloadAttempts = 5
-
-var downloadBackoffSchedule = []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
+const (
+	maxDownloadAttempts = 5
+	downloadBaseDelay   = 1 * time.Second
+)
 
 // GetObjectAPIClient is the subset of *s3.Client used to download source
 // videos, allowing tests to substitute a fake.
@@ -72,37 +73,30 @@ func (d *Downloader) DownloadSourceFromS3(ctx context.Context, jobID, s3URI stri
 	}
 	destPath := filepath.Join(destDir, "original.mp4")
 
-	var lastErr error
-	for attempt := 0; attempt < maxDownloadAttempts; attempt++ {
-		if attempt > 0 {
-			delay := downloadBackoffSchedule[attempt-1]
-			select {
-			case <-ctx.Done():
-				return "", ctx.Err()
-			default:
-			}
-			d.sleep(delay)
-		}
-
+	attempts := 0
+	err = pkg.RetryWithBackoff(ctx, maxDownloadAttempts, downloadBaseDelay, d.sleep, func(ctx context.Context) error {
+		attempts++
 		size, err := d.downloadOnce(ctx, bucket, key, destPath)
 		if err == nil {
-			log.Printf("event=source_download_complete job_id=%s size_bytes=%d attempts=%d", jobID, size, attempt+1)
-			return destPath, nil
+			log.Printf("event=source_download_complete job_id=%s size_bytes=%d attempts=%d", jobID, size, attempts)
+			return nil
 		}
 
 		if isNotFoundError(err) {
-			return "", fmt.Errorf("download source from s3: source object not found: %w", err)
+			return pkg.Permanent(fmt.Errorf("source object not found: %w", err))
 		}
 
 		var rcErr *pkg.ResourceConstraintError
 		if errors.As(err, &rcErr) {
-			return "", err
+			return pkg.Permanent(err)
 		}
 
-		lastErr = err
+		return err
+	})
+	if err != nil {
+		return "", fmt.Errorf("download source from s3: %w", err)
 	}
-
-	return "", fmt.Errorf("download source from s3: exhausted %d attempts: %w", maxDownloadAttempts, lastErr)
+	return destPath, nil
 }
 
 // downloadOnce performs a single GetObject call and streams the body to
