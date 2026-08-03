@@ -2,10 +2,13 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"pulsegrid/pkg"
@@ -13,6 +16,25 @@ import (
 
 // DefaultMaxUploadBytes is the default maximum accepted video file size (10GB).
 const DefaultMaxUploadBytes = 10 * 1024 * 1024 * 1024
+
+// SourceUploader stores the uploaded source video and returns its S3 URI.
+// Satisfied by *pkg/storage.Uploader.
+type SourceUploader interface {
+	UploadSource(ctx context.Context, jobID, sourceName string, body io.ReadSeeker) (string, error)
+}
+
+// JobEnqueuer publishes a job to the transcoding job queue. Satisfied by
+// *pkg/queue.Producer.
+type JobEnqueuer interface {
+	EnqueueJob(ctx context.Context, job pkg.Job) error
+}
+
+// JobStore persists and updates job metadata. Satisfied by *pkg/store.Store.
+type JobStore interface {
+	RecordJobMetadata(ctx context.Context, job pkg.Job) error
+	UpdateJobStatus(ctx context.Context, jobID string, status pkg.JobStatus) error
+	DeleteJob(ctx context.Context, jobID string) error
+}
 
 // ErrorResponse is the structured error body returned for failed requests.
 type ErrorResponse struct {
@@ -31,7 +53,7 @@ type UploadResponse struct {
 	SubmissionTime           string `json:"submission_time"`
 }
 
-// validationError carries the HTTP status/code for a request validation failure.
+// validationError carries the HTTP status/code for a request failure.
 type validationError struct {
 	status  int
 	code    string
@@ -45,30 +67,50 @@ func newValidationError(status int, code, message, detail string) *validationErr
 	return &validationError{status: status, code: code, message: message, detail: detail}
 }
 
-// UploadHandler handles POST /videos/upload: parses multipart form data and
-// validates the request. S3/Kafka/Postgres wiring is added in later tasks.
+// UploadHandler handles POST /videos/upload: parses and validates the
+// multipart request, uploads the source video to S3, enqueues the
+// transcoding job to Kafka, and records job metadata to Postgres.
 type UploadHandler struct {
 	MaxUploadBytes int64
+	Uploader       SourceUploader
+	Queue          JobEnqueuer
+	Store          JobStore
+	OutputBucket   string
 }
 
-// NewUploadHandler returns an UploadHandler configured with default limits.
-func NewUploadHandler() *UploadHandler {
-	return &UploadHandler{MaxUploadBytes: DefaultMaxUploadBytes}
+// NewUploadHandler returns an UploadHandler wired to uploader, queue, and
+// store, with the default upload size limit. outputBucket names the S3
+// bucket transcoded outputs will eventually be written to.
+func NewUploadHandler(uploader SourceUploader, queue JobEnqueuer, store JobStore, outputBucket string) *UploadHandler {
+	return &UploadHandler{
+		MaxUploadBytes: DefaultMaxUploadBytes,
+		Uploader:       uploader,
+		Queue:          queue,
+		Store:          store,
+		OutputBucket:   outputBucket,
+	}
 }
 
 func (h *UploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requestID := newRequestID()
+	w.Header().Set("X-Request-Id", requestID)
 
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", "", requestID)
 		return
 	}
 
-	_, _, verr := h.parseAndValidate(r)
+	videoFile, videoSize, sourceName, renditions, verr := h.parseAndValidate(r)
 	if verr != nil {
 		writeError(w, verr.status, verr.code, verr.message, verr.detail, requestID)
 		return
 	}
+	defer func() {
+		videoFile.Close()
+		os.Remove(videoFile.Name())
+	}()
+
+	ctx := r.Context()
 
 	jobID, err := pkg.NewJobID()
 	if err != nil {
@@ -76,30 +118,81 @@ func (h *UploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sourceS3URI, err := h.Uploader.UploadSource(ctx, jobID, sourceName, videoFile)
+	if err != nil {
+		log.Printf("upload job_id=%s request_id=%s event=s3_upload_failed error=%v", jobID, requestID, err)
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to store video", err.Error(), requestID)
+		return
+	}
+
+	job := pkg.Job{
+		ID:                  jobID,
+		SourceName:          sourceName,
+		SourceFileSizeBytes: videoSize,
+		SourceS3URI:         sourceS3URI,
+		OutputS3Prefix:      fmt.Sprintf("s3://%s/%s/", h.OutputBucket, jobID),
+		Renditions:          renditions,
+		Status:              pkg.JobStatusSubmitting,
+		RetryCount:          0,
+		SubmissionTime:      time.Now().UTC(),
+	}
+
+	// Step 1: insert with status="submitting" before the job is visible in
+	// the queue. If this fails, nothing downstream has happened yet.
+	if err := h.Store.RecordJobMetadata(ctx, job); err != nil {
+		log.Printf("upload job_id=%s request_id=%s event=db_insert_failed error=%v", jobID, requestID, err)
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to record job", err.Error(), requestID)
+		return
+	}
+
+	// Step 2: publish to Kafka. If this fails, roll back the DB row so the
+	// job never existed from the client's point of view.
+	if err := h.Queue.EnqueueJob(ctx, job); err != nil {
+		if delErr := h.Store.DeleteJob(ctx, job.ID); delErr != nil {
+			log.Printf("ALERT job_id=%s request_id=%s event=orphan_row_rollback_failed kafka_error=%v db_error=%v — job row left in 'submitting' state, operator must investigate", jobID, requestID, err, delErr)
+		}
+		log.Printf("upload job_id=%s request_id=%s event=kafka_publish_failed error=%v", jobID, requestID, err)
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to queue job", err.Error(), requestID)
+		return
+	}
+
+	// Step 3: mark the row confirmed in queue. If this fails, the job is
+	// already in Kafka and will be processed; the DB just hasn't caught up.
+	// This is not fatal to the client's request — log an alert for an
+	// operator to reconcile instead of failing an already-queued job.
+	if err := h.Store.UpdateJobStatus(ctx, job.ID, pkg.JobStatusSubmitted); err != nil {
+		log.Printf("ALERT job_id=%s request_id=%s event=db_status_update_failed error=%v — job is in Kafka but DB still shows 'submitting', operator must investigate", jobID, requestID, err)
+	}
+
 	resp := UploadResponse{
 		JobID:                    jobID,
 		StatusURI:                fmt.Sprintf("/jobs/%s", jobID),
 		EstimatedWaitTimeSeconds: 120,
-		SubmissionTime:           time.Now().UTC().Format(time.RFC3339),
+		SubmissionTime:           job.SubmissionTime.Format(time.RFC3339),
 	}
 	writeJSON(w, http.StatusAccepted, resp)
 }
 
-// parseAndValidate streams the multipart request, extracting source_name,
-// renditions, and the video file, without buffering the file in memory.
-func (h *UploadHandler) parseAndValidate(r *http.Request) (string, []pkg.Rendition, *validationError) {
+// parseAndValidate streams the multipart request, spooling the video part to
+// a temp file (so it can be re-read/seeked by the S3 uploader's retry logic)
+// and extracting source_name and renditions. Callers own the returned file
+// and must close and remove it.
+func (h *UploadHandler) parseAndValidate(r *http.Request) (videoFile *os.File, videoSize int64, sourceName string, renditions []pkg.Rendition, verr *validationError) {
 	mr, err := r.MultipartReader()
 	if err != nil {
-		return "", nil, newValidationError(http.StatusBadRequest, "VALIDATION_ERROR", "Invalid multipart/form-data request", err.Error())
+		return nil, 0, "", nil, newValidationError(http.StatusBadRequest, "VALIDATION_ERROR", "Invalid multipart/form-data request", err.Error())
 	}
 
-	var (
-		sourceName    string
-		renditionsRaw []byte
-		haveVideo     bool
-	)
-
+	var renditionsRaw []byte
 	maxBytes := h.MaxUploadBytes
+
+	cleanup := func() {
+		if videoFile != nil {
+			videoFile.Close()
+			os.Remove(videoFile.Name())
+			videoFile = nil
+		}
+	}
 
 	for {
 		part, err := mr.NextPart()
@@ -107,30 +200,51 @@ func (h *UploadHandler) parseAndValidate(r *http.Request) (string, []pkg.Renditi
 			break
 		}
 		if err != nil {
-			return "", nil, newValidationError(http.StatusBadRequest, "VALIDATION_ERROR", "Malformed multipart request", err.Error())
+			cleanup()
+			return nil, 0, "", nil, newValidationError(http.StatusBadRequest, "VALIDATION_ERROR", "Malformed multipart request", err.Error())
 		}
 
 		switch part.FormName() {
 		case "video":
 			if part.FileName() == "" {
 				part.Close()
-				return "", nil, newValidationError(http.StatusBadRequest, "VALIDATION_ERROR", "Missing field: video", "")
+				cleanup()
+				return nil, 0, "", nil, newValidationError(http.StatusBadRequest, "VALIDATION_ERROR", "Missing field: video", "")
 			}
-			n, copyErr := io.Copy(io.Discard, io.LimitReader(part, maxBytes+1))
+
+			tmp, tmpErr := os.CreateTemp("", "pulsegrid-upload-*.mp4")
+			if tmpErr != nil {
+				part.Close()
+				return nil, 0, "", nil, newValidationError(http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to stage upload", tmpErr.Error())
+			}
+
+			n, copyErr := io.Copy(tmp, io.LimitReader(part, maxBytes+1))
 			part.Close()
 			if copyErr != nil {
-				return "", nil, newValidationError(http.StatusBadRequest, "VALIDATION_ERROR", "Failed to read video file", copyErr.Error())
+				tmp.Close()
+				os.Remove(tmp.Name())
+				return nil, 0, "", nil, newValidationError(http.StatusBadRequest, "VALIDATION_ERROR", "Failed to read video file", copyErr.Error())
 			}
 			if n > maxBytes {
-				return "", nil, newValidationError(http.StatusRequestEntityTooLarge, "VALIDATION_ERROR", fmt.Sprintf("File exceeds %d byte limit", maxBytes), "")
+				tmp.Close()
+				os.Remove(tmp.Name())
+				return nil, 0, "", nil, newValidationError(http.StatusRequestEntityTooLarge, "VALIDATION_ERROR", fmt.Sprintf("File exceeds %d byte limit", maxBytes), "")
 			}
-			haveVideo = true
+			if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+				tmp.Close()
+				os.Remove(tmp.Name())
+				return nil, 0, "", nil, newValidationError(http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to stage upload", err.Error())
+			}
+
+			videoFile = tmp
+			videoSize = n
 
 		case "source_name":
 			b, readErr := io.ReadAll(io.LimitReader(part, 4096))
 			part.Close()
 			if readErr != nil {
-				return "", nil, newValidationError(http.StatusBadRequest, "VALIDATION_ERROR", "Failed to read source_name", readErr.Error())
+				cleanup()
+				return nil, 0, "", nil, newValidationError(http.StatusBadRequest, "VALIDATION_ERROR", "Failed to read source_name", readErr.Error())
 			}
 			sourceName = string(b)
 
@@ -138,7 +252,8 @@ func (h *UploadHandler) parseAndValidate(r *http.Request) (string, []pkg.Renditi
 			b, readErr := io.ReadAll(io.LimitReader(part, 1<<20))
 			part.Close()
 			if readErr != nil {
-				return "", nil, newValidationError(http.StatusBadRequest, "VALIDATION_ERROR", "Failed to read renditions", readErr.Error())
+				cleanup()
+				return nil, 0, "", nil, newValidationError(http.StatusBadRequest, "VALIDATION_ERROR", "Failed to read renditions", readErr.Error())
 			}
 			renditionsRaw = b
 
@@ -147,19 +262,21 @@ func (h *UploadHandler) parseAndValidate(r *http.Request) (string, []pkg.Renditi
 		}
 	}
 
-	if !haveVideo {
-		return "", nil, newValidationError(http.StatusBadRequest, "VALIDATION_ERROR", "Missing field: video", "")
+	if videoFile == nil {
+		return nil, 0, "", nil, newValidationError(http.StatusBadRequest, "VALIDATION_ERROR", "Missing field: video", "")
 	}
 	if sourceName == "" {
-		return "", nil, newValidationError(http.StatusBadRequest, "VALIDATION_ERROR", "Missing field: source_name", "field=source_name")
+		cleanup()
+		return nil, 0, "", nil, newValidationError(http.StatusBadRequest, "VALIDATION_ERROR", "Missing field: source_name", "field=source_name")
 	}
 
-	renditions, verr := parseRenditions(renditionsRaw)
-	if verr != nil {
-		return "", nil, verr
+	renditionsParsed, rverr := parseRenditions(renditionsRaw)
+	if rverr != nil {
+		cleanup()
+		return nil, 0, "", nil, rverr
 	}
 
-	return sourceName, renditions, nil
+	return videoFile, videoSize, sourceName, renditionsParsed, nil
 }
 
 // parseRenditions validates the optional renditions JSON field, falling back

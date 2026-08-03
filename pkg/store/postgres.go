@@ -103,6 +103,17 @@ func (s *Store) UpdateJobStatus(ctx context.Context, jobID string, status pkg.Jo
 	return nil
 }
 
+// DeleteJob removes the jobs row for jobID. Used to roll back an orphaned
+// "submitting" row when the subsequent Kafka publish fails, so the job never
+// existed from the client's point of view.
+func (s *Store) DeleteJob(ctx context.Context, jobID string) error {
+	_, err := s.db.Exec(ctx, `DELETE FROM jobs WHERE job_id = $1`, jobID)
+	if err != nil {
+		return fmt.Errorf("delete job %s: %w", jobID, err)
+	}
+	return nil
+}
+
 // GetJob queries the jobs table by job_id and returns the stored record.
 func (s *Store) GetJob(ctx context.Context, jobID string) (pkg.Job, error) {
 	row := s.db.QueryRow(ctx, `
