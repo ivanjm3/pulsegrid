@@ -1,0 +1,178 @@
+{
+  "title": "Pulsegrid — Transcoding Pipeline",
+  "uid": "pulsegrid-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "utc",
+  "editable": true,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Prometheus",
+        "current": {}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Queue Depth",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "pulsegrid_queue_depth_jobs", "legendFormat": "queue depth" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 50 },
+              { "color": "red", "value": 100 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Worker Pod Count",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "Sourced from kube-state-metrics (standard in-cluster addon, no extra AWS cost) rather than an application metric, since the worker does not currently emit its own replica-count gauge.",
+      "targets": [
+        {
+          "expr": "sum(kube_deployment_status_replicas{namespace=\"pulsegrid\", deployment=\"pulsegrid-worker\"})",
+          "legendFormat": "worker replicas"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 3,
+      "title": "Failure Rate (5m)",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "sum(rate(pulsegrid_transcode_failure[5m])) / clamp_min(sum(rate(pulsegrid_transcode_failure[5m])) + sum(rate(pulsegrid_job_completed_total[5m])), 1e-9)",
+          "legendFormat": "failure rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.05 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "DLQ Total",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "sum(pulsegrid_jobs_dlq_total)", "legendFormat": "DLQ total" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 5,
+      "title": "Transcode Latency Percentiles — last 1h",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(pulsegrid_transcode_duration_seconds_bucket[1h])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(pulsegrid_transcode_duration_seconds_bucket[1h])) by (le))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(pulsegrid_transcode_duration_seconds_bucket[1h])) by (le))", "legendFormat": "p99" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 6,
+      "title": "Transcode Latency Percentiles — last 6h",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(pulsegrid_transcode_duration_seconds_bucket[6h])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(pulsegrid_transcode_duration_seconds_bucket[6h])) by (le))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(pulsegrid_transcode_duration_seconds_bucket[6h])) by (le))", "legendFormat": "p99" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 7,
+      "title": "Transcode Latency Percentiles — last 24h",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(pulsegrid_transcode_duration_seconds_bucket[24h])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(pulsegrid_transcode_duration_seconds_bucket[24h])) by (le))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(pulsegrid_transcode_duration_seconds_bucket[24h])) by (le))", "legendFormat": "p99" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 8,
+      "title": "Throughput — Jobs Completed / Minute",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "sum(rate(pulsegrid_job_completed_total[1m])) * 60", "legendFormat": "jobs/min" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 9,
+      "title": "Estimated Time to Empty Queue",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "queue_depth / current completion rate. Flat/rising line under sustained load signals workers are not keeping up.",
+      "targets": [
+        {
+          "expr": "pulsegrid_queue_depth_jobs / clamp_min(sum(rate(pulsegrid_job_completed_total[5m])) * 60, 1e-9)",
+          "legendFormat": "minutes to empty"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "m" } }
+    },
+    {
+      "id": 10,
+      "title": "Per-Rendition Breakdown — last 1h",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "Average latency and completion count per rendition. Failure rate is job-level, not rendition-level: pulsegrid_transcode_failure (pkg/metrics/worker.go) is labeled by error_type only, not rendition — a job's error classification isn't tied to which rendition was in flight. Splitting that would need a worker-side change beyond this dashboard/alerts task.",
+      "targets": [
+        {
+          "expr": "avg(rate(pulsegrid_transcode_duration_seconds_sum[1h]) / clamp_min(rate(pulsegrid_transcode_duration_seconds_count[1h]), 1e-9)) by (rendition)",
+          "legendFormat": "{{rendition}}",
+          "format": "table",
+          "instant": true
+        }
+      ]
+    }
+  ]
+}

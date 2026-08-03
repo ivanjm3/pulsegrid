@@ -1,0 +1,66 @@
+# Pulsegrid alert rules (requirements.md #9.6 / task 31).
+#
+# Written as a Prometheus Operator PrometheusRule CRD, scraped by an
+# in-cluster kube-prometheus-stack install (Prometheus + Alertmanager +
+# Grafana all running as pods on the existing EKS node group). This is a
+# deliberate cost choice: Amazon Managed Service for Prometheus and Amazon
+# Managed Grafana are both billed AWS services with no free tier, so
+# provisioning either would add a recurring cost line item beyond
+# terraform/main.tf's free-tier footprint. Running the same OSS stack
+# in-cluster costs nothing beyond the CPU/RAM already budgeted for the
+# t3.micro node group.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: pulsegrid-alerts
+  namespace: pulsegrid
+  labels:
+    app: pulsegrid
+spec:
+  groups:
+    - name: pulsegrid.rules
+      rules:
+        # requirements.md #9.6: queue depth exceeds 100 jobs
+        - alert: HighQueueDepth
+          expr: pulsegrid_queue_depth_jobs > 100
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pulsegrid queue depth above 100 for 5 minutes"
+            description: "pulsegrid_queue_depth_jobs has been {{ $value }} for at least 5m. Worker pods may be under-scaled or stuck."
+
+        # requirements.md #9.6: failure rate exceeds 5%
+        - alert: HighFailureRate
+          expr: >
+            (
+              sum(rate(pulsegrid_transcode_failure[5m]))
+              /
+              clamp_min(sum(rate(pulsegrid_transcode_failure[5m])) + sum(rate(pulsegrid_job_completed_total[5m])), 1e-9)
+            ) > 0.05
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pulsegrid transcode failure rate above 5%"
+            description: "{{ $value | humanizePercentage }} of jobs are failing over the last 5m (failures / (failures + completions))."
+
+        # requirements.md #9.6: average p99 latency exceeds 30 minutes
+        - alert: HighP99Latency
+          expr: histogram_quantile(0.99, sum(rate(pulsegrid_transcode_duration_seconds_bucket[30m])) by (le)) > 1800
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pulsegrid p99 transcode latency above 30 minutes"
+            description: "p99 rendition transcode duration is {{ $value | humanizeDuration }}, above the 1800s (30min) SLO target (requirements.md #15.2)."
+
+        # DLQ backlog growth (requirements.md #11.1/#11.5 feed pulsegrid_jobs_dlq_total)
+        - alert: DLQBacklog
+          expr: increase(pulsegrid_jobs_dlq_total[1h]) > 10
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pulsegrid DLQ backlog above 10 jobs in the last hour"
+            description: "{{ $value }} jobs moved to the dead letter queue in the last hour. Investigate permanent errors or retry exhaustion."
