@@ -42,9 +42,12 @@ func main() {
 	db := store.NewStore(pool)
 
 	uploadHandler := api.NewUploadHandler(uploader, producer, db, outputBucket)
+	manifests := storage.NewDownloader(s3Client, outputBucket)
+	statusHandler := api.NewStatusHandler(db, manifests)
 
 	mux := http.NewServeMux()
 	mux.Handle("/videos/upload", uploadHandler)
+	mux.Handle("GET /jobs/{job_id}", statusHandler)
 
 	const addr = ":8080"
 	log.Printf("pulsegrid api server listening on %s", addr)

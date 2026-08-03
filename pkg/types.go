@@ -46,6 +46,24 @@ type Job struct {
 	RetryCount          int         `json:"retry_count"`
 	SubmissionTime      time.Time   `json:"submission_time"`
 	CompletionTime      *time.Time  `json:"completion_time,omitempty"`
+	FailureReason       *string     `json:"failure_reason,omitempty"`
+}
+
+// OutputFile describes a single transcoded output listed in a completed
+// job's manifest.
+type OutputFile struct {
+	Rendition       string `json:"rendition"`
+	Path            string `json:"path"`
+	SizeBytes       int64  `json:"size_bytes"`
+	DurationSeconds int    `json:"duration_seconds"`
+}
+
+// Manifest is the worker-generated summary of a completed job's outputs,
+// stored at s3://{output-bucket}/{job_id}/manifest.json (see design.md task
+// 16). Only the fields the status endpoint needs are modeled here.
+type Manifest struct {
+	JobID       string       `json:"job_id"`
+	OutputFiles []OutputFile `json:"output_files"`
 }
 
 // NewJobID generates an RFC 4122 version 4 UUID using crypto/rand.

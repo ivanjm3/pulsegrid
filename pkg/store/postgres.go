@@ -119,7 +119,7 @@ func (s *Store) GetJob(ctx context.Context, jobID string) (pkg.Job, error) {
 	row := s.db.QueryRow(ctx, `
 		SELECT job_id, status, source_file_name, source_file_size_bytes,
 		       source_s3_uri, output_s3_prefix, requested_renditions,
-		       submission_time, completion_time, retry_count
+		       submission_time, completion_time, retry_count, failure_reason
 		FROM jobs WHERE job_id = $1
 	`, jobID)
 
@@ -128,17 +128,19 @@ func (s *Store) GetJob(ctx context.Context, jobID string) (pkg.Job, error) {
 		status         string
 		renditionsRaw  []byte
 		completionTime *time.Time
+		failureReason  *string
 	)
 	if err := row.Scan(
 		&job.ID, &status, &job.SourceName, &job.SourceFileSizeBytes,
 		&job.SourceS3URI, &job.OutputS3Prefix, &renditionsRaw,
-		&job.SubmissionTime, &completionTime, &job.RetryCount,
+		&job.SubmissionTime, &completionTime, &job.RetryCount, &failureReason,
 	); err != nil {
 		return pkg.Job{}, fmt.Errorf("get job %s: %w", jobID, err)
 	}
 
 	job.Status = pkg.JobStatus(status)
 	job.CompletionTime = completionTime
+	job.FailureReason = failureReason
 	if err := json.Unmarshal(renditionsRaw, &job.Renditions); err != nil {
 		return pkg.Job{}, fmt.Errorf("get job %s: unmarshal renditions: %w", jobID, err)
 	}

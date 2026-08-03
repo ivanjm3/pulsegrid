@@ -28,7 +28,7 @@ func (r *fakeRow) Scan(dest ...any) error {
 	values := []any{
 		r.row.jobID, r.row.status, r.row.sourceFileName, r.row.sourceFileSizeBytes,
 		r.row.sourceS3URI, r.row.outputS3Prefix, r.row.requestedRenditions,
-		r.row.submissionTime, r.row.completionTime, r.row.retryCount,
+		r.row.submissionTime, r.row.completionTime, r.row.retryCount, r.row.failureReason,
 	}
 	if len(dest) != len(values) {
 		return errors.New("fakeRow: column count mismatch")
@@ -47,6 +47,8 @@ func (r *fakeRow) Scan(dest ...any) error {
 			*p = values[i].(time.Time)
 		case **time.Time:
 			*p = values[i].(*time.Time)
+		case **string:
+			*p = values[i].(*string)
 		default:
 			return errors.New("fakeRow: unsupported dest type")
 		}
@@ -66,6 +68,7 @@ type fakeJobRow struct {
 	submissionTime      time.Time
 	completionTime      *time.Time
 	retryCount          int
+	failureReason       *string
 }
 
 // fakeDB is an in-memory stand-in for *pgxpool.Pool implementing DB, used to
