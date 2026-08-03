@@ -115,13 +115,20 @@ type fakeDLQPublisher struct{}
 
 func (fakeDLQPublisher) SendDLQ(ctx context.Context, msg queue.DLQMessage) error { return nil }
 
-// fakeStore records every status event recorded during job processing.
+// fakeStore records every status event and jobs-table transition recorded
+// during job processing.
 type fakeStore struct {
 	events []string
 }
 
 func (f *fakeStore) RecordStatusEvent(ctx context.Context, jobID, eventType string, eventData map[string]any, podID string) error {
 	f.events = append(f.events, eventType)
+	return nil
+}
+
+func (f *fakeStore) MarkJobProcessing(ctx context.Context, jobID string) error { return nil }
+func (f *fakeStore) MarkJobCompleted(ctx context.Context, jobID string) error  { return nil }
+func (f *fakeStore) MarkJobFailed(ctx context.Context, jobID, failureReason string, retryCount int) error {
 	return nil
 }
 
@@ -229,9 +236,9 @@ func TestWorkerPod_EndToEnd(t *testing.T) {
 		t.Fatalf("committed count = %d, want 1", len(reader.committed))
 	}
 
-	// Job completion recorded.
-	if len(store.events) != 1 || store.events[0] != "job_completed" {
-		t.Fatalf("status events = %v, want [job_completed]", store.events)
+	// Job start and completion recorded.
+	if len(store.events) != 2 || store.events[0] != "job_started" || store.events[1] != "job_completed" {
+		t.Fatalf("status events = %v, want [job_started job_completed]", store.events)
 	}
 
 	// pulsegrid_job_completed_total incremented.

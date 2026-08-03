@@ -111,6 +111,10 @@ type jobHandler struct {
 func (h *jobHandler) HandleJob(ctx context.Context, msg queue.JobMessage) error {
 	defer worker.CleanupTempDir(h.logger, h.podID, msg.JobID)
 
+	if err := h.lifecycle.HandleStart(ctx, msg.JobID); err != nil {
+		worker.LogJobError(h.logger, "record_status_event_failed", msg.JobID, h.podID, err, msg.RetryCount, "", "")
+	}
+
 	procErr := h.process(ctx, msg)
 	if procErr == nil {
 		if err := h.lifecycle.HandleSuccess(ctx, msg); err != nil {

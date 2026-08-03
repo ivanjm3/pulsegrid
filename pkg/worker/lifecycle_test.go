@@ -8,6 +8,8 @@ import (
 	"math/rand"
 	"testing"
 
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
+
 	"pulsegrid/pkg"
 	"pulsegrid/pkg/metrics"
 	"pulsegrid/pkg/queue"
@@ -41,13 +43,36 @@ func (f *fakeDLQPublisher) SendDLQ(ctx context.Context, msg queue.DLQMessage) er
 	return nil
 }
 
-// fakeStatusRecorder records every event passed to RecordStatusEvent.
+// fakeStatusRecorder records every event and jobs-table transition passed to
+// it.
 type fakeStatusRecorder struct {
-	events []string
+	events        []string
+	processing    []string
+	completed     []string
+	failed        []string
+	failureReason string
+	retryCount    int
 }
 
 func (f *fakeStatusRecorder) RecordStatusEvent(ctx context.Context, jobID, eventType string, eventData map[string]any, podID string) error {
 	f.events = append(f.events, eventType)
+	return nil
+}
+
+func (f *fakeStatusRecorder) MarkJobProcessing(ctx context.Context, jobID string) error {
+	f.processing = append(f.processing, jobID)
+	return nil
+}
+
+func (f *fakeStatusRecorder) MarkJobCompleted(ctx context.Context, jobID string) error {
+	f.completed = append(f.completed, jobID)
+	return nil
+}
+
+func (f *fakeStatusRecorder) MarkJobFailed(ctx context.Context, jobID, failureReason string, retryCount int) error {
+	f.failed = append(f.failed, jobID)
+	f.failureReason = failureReason
+	f.retryCount = retryCount
 	return nil
 }
 
@@ -202,6 +227,74 @@ func TestHandleSuccess_RecordsCompletion(t *testing.T) {
 	}
 	if len(store.events) != 1 || store.events[0] != "job_completed" {
 		t.Fatalf("status events = %v, want [job_completed]", store.events)
+	}
+	if len(store.completed) != 1 || store.completed[0] != "job-1" {
+		t.Fatalf("MarkJobCompleted calls = %v, want [job-1]", store.completed)
+	}
+}
+
+// TestHandleStart_MarksProcessing verifies HandleStart transitions the jobs
+// table row to processing and records a job_started event, so GET
+// /jobs/{id} (Requirement 5.2/5.3's underlying "current status") reflects a
+// job that's actively being worked, not stuck at "submitted".
+func TestHandleStart_MarksProcessing(t *testing.T) {
+	h, _, _, store := newTestLifecycleHandler()
+	if err := h.HandleStart(context.Background(), "job-1"); err != nil {
+		t.Fatalf("HandleStart returned error: %v", err)
+	}
+	if len(store.processing) != 1 || store.processing[0] != "job-1" {
+		t.Fatalf("MarkJobProcessing calls = %v, want [job-1]", store.processing)
+	}
+	if len(store.events) != 1 || store.events[0] != "job_started" {
+		t.Fatalf("status events = %v, want [job_started]", store.events)
+	}
+}
+
+// TestHandleFailure_DLQ_MarksJobFailed verifies Requirement 5.3: on a
+// terminal failure (DLQ), the jobs table row records failure_reason and
+// retry_count, not just the job_status_events history log. It also verifies
+// Requirement 8.5's pulsegrid_jobs_dlq_total counter increments.
+func TestHandleFailure_DLQ_MarksJobFailed(t *testing.T) {
+	h, _, _, store := newTestLifecycleHandler()
+	msg := queue.JobMessage{JobID: "job-perm", RetryCount: 2}
+
+	outcome, err := h.HandleFailure(context.Background(), msg, unsupportedCodecError(msg.JobID))
+	if err != nil {
+		t.Fatalf("HandleFailure returned error: %v", err)
+	}
+	if outcome != OutcomeDLQd {
+		t.Fatalf("outcome = %s, want %s", outcome, OutcomeDLQd)
+	}
+	if len(store.failed) != 1 || store.failed[0] != "job-perm" {
+		t.Fatalf("MarkJobFailed calls = %v, want [job-perm]", store.failed)
+	}
+	if store.retryCount != 2 {
+		t.Fatalf("MarkJobFailed retryCount = %d, want 2", store.retryCount)
+	}
+	if store.failureReason == "" {
+		t.Fatalf("MarkJobFailed failureReason is empty")
+	}
+	if got := promtestutil.ToFloat64(h.metrics.JobsDLQTotal); got != 1 {
+		t.Fatalf("JobsDLQTotal = %v, want 1", got)
+	}
+}
+
+// TestHandleFailure_Retry_DoesNotMarkJobFailed verifies a still-retryable
+// failure (below MaxRetries) leaves the jobs table row alone — the job is
+// still active, not terminally failed.
+func TestHandleFailure_Retry_DoesNotMarkJobFailed(t *testing.T) {
+	h, _, _, store := newTestLifecycleHandler()
+	msg := queue.JobMessage{JobID: "job-retry", RetryCount: 0}
+
+	outcome, err := h.HandleFailure(context.Background(), msg, retryableTransientError{})
+	if err != nil {
+		t.Fatalf("HandleFailure returned error: %v", err)
+	}
+	if outcome != OutcomeRetried {
+		t.Fatalf("outcome = %s, want %s", outcome, OutcomeRetried)
+	}
+	if len(store.failed) != 0 {
+		t.Fatalf("MarkJobFailed calls = %v, want none for a retryable failure", store.failed)
 	}
 }
 

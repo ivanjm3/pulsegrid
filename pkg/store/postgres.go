@@ -98,6 +98,42 @@ func (s *Store) UpdateJobStatus(ctx context.Context, jobID string, status pkg.Jo
 	return nil
 }
 
+// MarkJobProcessing transitions job jobID to the processing status. Called
+// by the worker when it begins handling a job, so GET /jobs/{id} reflects
+// that the job left the queue instead of appearing "submitted" forever.
+func (s *Store) MarkJobProcessing(ctx context.Context, jobID string) error {
+	return s.UpdateJobStatus(ctx, jobID, pkg.JobStatusProcessing)
+}
+
+// MarkJobCompleted transitions job jobID to completed and records
+// completion_time, per Requirement 5.2 ("update the job record with
+// completion timestamp").
+func (s *Store) MarkJobCompleted(ctx context.Context, jobID string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE jobs SET status = $2, completion_time = $3, updated_at = CURRENT_TIMESTAMP WHERE job_id = $1
+	`, jobID, string(pkg.JobStatusCompleted), time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("mark job completed: %w", err)
+	}
+	return nil
+}
+
+// MarkJobFailed transitions job jobID to failed, recording failureReason and
+// retryCount, per Requirement 5.3 ("update the job record with failure
+// timestamp, failure reason, retry count"). completion_time is reused as the
+// terminal timestamp — the jobs table (design.md, task 5) has no separate
+// failure_time column, and completion_time is otherwise unset for a job that
+// never succeeded.
+func (s *Store) MarkJobFailed(ctx context.Context, jobID, failureReason string, retryCount int) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE jobs SET status = $2, failure_reason = $3, retry_count = $4, completion_time = $5, updated_at = CURRENT_TIMESTAMP WHERE job_id = $1
+	`, jobID, string(pkg.JobStatusFailed), failureReason, retryCount, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("mark job failed: %w", err)
+	}
+	return nil
+}
+
 // DeleteJob removes the jobs row for jobID. Used to roll back an orphaned
 // "submitting" row when the subsequent Kafka publish fails, so the job never
 // existed from the client's point of view.

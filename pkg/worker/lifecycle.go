@@ -115,10 +115,17 @@ type DLQPublisher interface {
 	SendDLQ(ctx context.Context, msg queue.DLQMessage) error
 }
 
-// StatusRecorder records a job status event, matching *store.Store's
-// signature.
+// StatusRecorder records job status events and the jobs table's own
+// status/completion/failure fields, matching *store.Store's signature.
+// Beyond job_status_events (the history log), MarkJobProcessing/
+// MarkJobCompleted/MarkJobFailed keep the jobs row itself current so
+// GET /jobs/{id} (Requirements 5.2, 5.3) reflects real progress instead of
+// staying "submitted" forever.
 type StatusRecorder interface {
 	RecordStatusEvent(ctx context.Context, jobID, eventType string, eventData map[string]any, podID string) error
+	MarkJobProcessing(ctx context.Context, jobID string) error
+	MarkJobCompleted(ctx context.Context, jobID string) error
+	MarkJobFailed(ctx context.Context, jobID, failureReason string, retryCount int) error
 }
 
 // LifecycleHandler implements job completion, retry, and DLQ routing (task
@@ -140,10 +147,21 @@ func NewLifecycleHandler(retry RetryPublisher, dlq DLQPublisher, store StatusRec
 	return &LifecycleHandler{retry: retry, dlq: dlq, store: store, metrics: m, podID: podID, logger: logger}
 }
 
+// HandleStart marks jobID as processing and records a job_started status
+// event. Called once, before transcoding begins, so a job that's actively
+// being worked no longer reads as "submitted" via GET /jobs/{id}.
+func (h *LifecycleHandler) HandleStart(ctx context.Context, jobID string) error {
+	errProcessing := h.store.MarkJobProcessing(ctx, jobID)
+	errEvent := h.store.RecordStatusEvent(ctx, jobID, "job_started", nil, h.podID)
+	return errors.Join(errProcessing, errEvent)
+}
+
 // HandleSuccess records a job's successful completion.
 func (h *LifecycleHandler) HandleSuccess(ctx context.Context, msg queue.JobMessage) error {
 	h.metrics.IncJobCompleted()
-	return h.store.RecordStatusEvent(ctx, msg.JobID, "job_completed", nil, h.podID)
+	errCompleted := h.store.MarkJobCompleted(ctx, msg.JobID)
+	errEvent := h.store.RecordStatusEvent(ctx, msg.JobID, "job_completed", nil, h.podID)
+	return errors.Join(errCompleted, errEvent)
 }
 
 // HandleFailure classifies procErr and routes msg accordingly: retry
@@ -173,6 +191,9 @@ func (h *LifecycleHandler) HandleFailure(ctx context.Context, msg queue.JobMessa
 	if class == ErrorClassPermanent || msg.RetryCount >= MaxRetries {
 		if err := h.sendToDLQ(ctx, msg, procErr); err != nil {
 			return "", fmt.Errorf("handle failure: send to dlq: %w", err)
+		}
+		if err := h.store.MarkJobFailed(ctx, msg.JobID, procErr.Error(), msg.RetryCount); err != nil {
+			LogJobError(h.logger, "mark_job_failed_failed", msg.JobID, h.podID, err, msg.RetryCount, class, "")
 		}
 		if err := h.recordEvent(ctx, msg.JobID, "job_failed", procErr, class); err != nil {
 			LogJobError(h.logger, "record_status_event_failed", msg.JobID, h.podID, err, msg.RetryCount, class, "")
@@ -205,7 +226,11 @@ func (h *LifecycleHandler) sendToDLQ(ctx context.Context, msg queue.JobMessage, 
 		PodID:             h.podID,
 		StderrSnippet:     stderrSnippet(procErr),
 	}
-	return h.dlq.SendDLQ(ctx, dlqMsg)
+	if err := h.dlq.SendDLQ(ctx, dlqMsg); err != nil {
+		return err
+	}
+	h.metrics.IncJobsDLQ()
+	return nil
 }
 
 func (h *LifecycleHandler) recordEvent(ctx context.Context, jobID, eventType string, procErr error, class ErrorClass) error {

@@ -1,0 +1,18 @@
+# Multi-stage build for the Pulsegrid API server. No ffmpeg needed — the API
+# server only handles HTTP, S3, Kafka, and Postgres, never transcodes video.
+FROM golang:1.26-alpine AS build
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/pulsegrid-api ./cmd/api
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+COPY --from=build /out/pulsegrid-api /usr/local/bin/pulsegrid-api
+
+EXPOSE 8080 8081
+USER nobody
+ENTRYPOINT ["pulsegrid-api"]

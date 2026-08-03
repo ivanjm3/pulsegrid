@@ -15,6 +15,7 @@ type WorkerMetrics struct {
 	TranscodeFailureTotal    *prometheus.CounterVec
 	TranscodeDurationSeconds *prometheus.HistogramVec
 	PodResourceConstrained   prometheus.Counter
+	JobsDLQTotal             prometheus.Counter
 	registry                 *prometheus.Registry
 }
 
@@ -41,10 +42,14 @@ func NewWorker() *WorkerMetrics {
 			Name: "pulsegrid_pod_resource_constrained",
 			Help: "Total times this pod hit a fatal resource constraint (disk, OOM)",
 		}),
+		JobsDLQTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "pulsegrid_jobs_dlq_total",
+			Help: "Total jobs moved to the dead letter queue (permanent error or max retries exceeded)",
+		}),
 		registry: reg,
 	}
 
-	reg.MustRegister(m.JobCompletedTotal, m.TranscodeFailureTotal, m.TranscodeDurationSeconds, m.PodResourceConstrained)
+	reg.MustRegister(m.JobCompletedTotal, m.TranscodeFailureTotal, m.TranscodeDurationSeconds, m.PodResourceConstrained, m.JobsDLQTotal)
 	return m
 }
 
@@ -75,4 +80,10 @@ func (m *WorkerMetrics) ObserveTranscodeDuration(rendition string, seconds float
 // constraints (disk, OOM) hit by this pod.
 func (m *WorkerMetrics) IncPodResourceConstrained() {
 	m.PodResourceConstrained.Inc()
+}
+
+// IncJobsDLQ increments the counter tracking jobs moved to the dead letter
+// queue, per Requirement 8.5.
+func (m *WorkerMetrics) IncJobsDLQ() {
+	m.JobsDLQTotal.Inc()
 }

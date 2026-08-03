@@ -102,6 +102,33 @@ func (f *fakeDB) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comm
 		}
 		return pgconn.CommandTag{}, nil
 
+	case strings.Contains(sql, "UPDATE jobs SET status") && strings.Contains(sql, "failure_reason"):
+		jobID := args[0].(string)
+		row, exists := f.jobs[jobID]
+		if !exists {
+			return pgconn.CommandTag{}, nil
+		}
+		row.status = args[1].(string)
+		reason := args[2].(string)
+		row.failureReason = &reason
+		row.retryCount = args[3].(int)
+		completionTime := args[4].(time.Time)
+		row.completionTime = &completionTime
+		f.jobs[jobID] = row
+		return pgconn.CommandTag{}, nil
+
+	case strings.Contains(sql, "UPDATE jobs SET status") && strings.Contains(sql, "completion_time"):
+		jobID := args[0].(string)
+		row, exists := f.jobs[jobID]
+		if !exists {
+			return pgconn.CommandTag{}, nil
+		}
+		row.status = args[1].(string)
+		completionTime := args[2].(time.Time)
+		row.completionTime = &completionTime
+		f.jobs[jobID] = row
+		return pgconn.CommandTag{}, nil
+
 	case strings.Contains(sql, "UPDATE jobs SET status"):
 		jobID := args[0].(string)
 		row, exists := f.jobs[jobID]
@@ -264,6 +291,84 @@ func TestListJobs_ReturnsInsertedJobsWithTotal(t *testing.T) {
 	}
 	if len(results) != 2 {
 		t.Fatalf("results = %d, want 2", len(results))
+	}
+}
+
+func TestMarkJobProcessing_SetsProcessingStatus(t *testing.T) {
+	db := newFakeDB()
+	s := NewStore(db)
+	ctx := context.Background()
+
+	job := pkg.Job{ID: "33333333-3333-4333-8333-333333333333", SourceS3URI: "s3://x", OutputS3Prefix: "s3://y/", Status: pkg.JobStatusSubmitted, Renditions: []pkg.Rendition{}, SubmissionTime: time.Now().UTC()}
+	if err := s.RecordJobMetadata(ctx, job); err != nil {
+		t.Fatalf("RecordJobMetadata: %v", err)
+	}
+	if err := s.MarkJobProcessing(ctx, job.ID); err != nil {
+		t.Fatalf("MarkJobProcessing: %v", err)
+	}
+
+	got, err := s.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Status != pkg.JobStatusProcessing {
+		t.Fatalf("Status = %q, want %q", got.Status, pkg.JobStatusProcessing)
+	}
+}
+
+func TestMarkJobCompleted_SetsCompletedStatusAndTime(t *testing.T) {
+	db := newFakeDB()
+	s := NewStore(db)
+	ctx := context.Background()
+
+	job := pkg.Job{ID: "44444444-4444-4444-8444-444444444444", SourceS3URI: "s3://x", OutputS3Prefix: "s3://y/", Status: pkg.JobStatusProcessing, Renditions: []pkg.Rendition{}, SubmissionTime: time.Now().UTC()}
+	if err := s.RecordJobMetadata(ctx, job); err != nil {
+		t.Fatalf("RecordJobMetadata: %v", err)
+	}
+	if err := s.MarkJobCompleted(ctx, job.ID); err != nil {
+		t.Fatalf("MarkJobCompleted: %v", err)
+	}
+
+	got, err := s.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Status != pkg.JobStatusCompleted {
+		t.Fatalf("Status = %q, want %q", got.Status, pkg.JobStatusCompleted)
+	}
+	if got.CompletionTime == nil {
+		t.Fatalf("CompletionTime is nil, want set")
+	}
+}
+
+func TestMarkJobFailed_SetsFailedStatusReasonAndRetryCount(t *testing.T) {
+	db := newFakeDB()
+	s := NewStore(db)
+	ctx := context.Background()
+
+	job := pkg.Job{ID: "55555555-5555-4555-8555-555555555555", SourceS3URI: "s3://x", OutputS3Prefix: "s3://y/", Status: pkg.JobStatusProcessing, Renditions: []pkg.Rendition{}, SubmissionTime: time.Now().UTC()}
+	if err := s.RecordJobMetadata(ctx, job); err != nil {
+		t.Fatalf("RecordJobMetadata: %v", err)
+	}
+	if err := s.MarkJobFailed(ctx, job.ID, "unsupported codec", 3); err != nil {
+		t.Fatalf("MarkJobFailed: %v", err)
+	}
+
+	got, err := s.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Status != pkg.JobStatusFailed {
+		t.Fatalf("Status = %q, want %q", got.Status, pkg.JobStatusFailed)
+	}
+	if got.FailureReason == nil || *got.FailureReason != "unsupported codec" {
+		t.Fatalf("FailureReason = %v, want \"unsupported codec\"", got.FailureReason)
+	}
+	if got.RetryCount != 3 {
+		t.Fatalf("RetryCount = %d, want 3", got.RetryCount)
+	}
+	if got.CompletionTime == nil {
+		t.Fatalf("CompletionTime is nil, want set (used as terminal timestamp)")
 	}
 }
 
