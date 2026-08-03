@@ -80,7 +80,7 @@ func newTestLifecycleHandler() (*LifecycleHandler, *fakeRetryPublisher, *fakeDLQ
 	retry := &fakeRetryPublisher{}
 	dlq := &fakeDLQPublisher{}
 	store := &fakeStatusRecorder{}
-	h := NewLifecycleHandler(retry, dlq, store, metrics.NewWorker(), "worker-pod-test", NewLogger(io.Discard))
+	h := NewLifecycleHandler(retry, dlq, store, metrics.NewWorker(), "worker-pod-test", NewLogger(io.Discard), nil)
 	return h, retry, dlq, store
 }
 

@@ -183,7 +183,7 @@ func TestWorkerPod_EndToEnd(t *testing.T) {
 	store := &fakeStore{}
 	m := metrics.NewWorker()
 	logger := worker.NewLogger(io.Discard)
-	lifecycle := worker.NewLifecycleHandler(fakeRetryPublisher{}, fakeDLQPublisher{}, store, m, "worker-pod-e2e", logger)
+	lifecycle := worker.NewLifecycleHandler(fakeRetryPublisher{}, fakeDLQPublisher{}, store, m, "worker-pod-e2e", logger, nil)
 
 	handler := &jobHandler{
 		downloader: downloader,

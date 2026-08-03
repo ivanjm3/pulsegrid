@@ -115,6 +115,13 @@ type DLQPublisher interface {
 	SendDLQ(ctx context.Context, msg queue.DLQMessage) error
 }
 
+// EventPublisher publishes a job lifecycle event to the analytics pipeline
+// (task 35). Implementations must not block job processing on failure — see
+// LifecycleHandler.emitEvent.
+type EventPublisher interface {
+	PublishEvent(ctx context.Context, event queue.JobLifecycleEvent) error
+}
+
 // StatusRecorder records job status events and the jobs table's own
 // status/completion/failure fields, matching *store.Store's signature.
 // Beyond job_status_events (the history log), MarkJobProcessing/
@@ -136,6 +143,7 @@ type LifecycleHandler struct {
 	retry   RetryPublisher
 	dlq     DLQPublisher
 	store   StatusRecorder
+	events  EventPublisher
 	metrics *metrics.WorkerMetrics
 	podID   string
 	logger  *slog.Logger
@@ -143,8 +151,10 @@ type LifecycleHandler struct {
 
 // NewLifecycleHandler returns a LifecycleHandler wired to retry, dlq, and
 // store, reporting events under podID and logging errors to logger.
-func NewLifecycleHandler(retry RetryPublisher, dlq DLQPublisher, store StatusRecorder, m *metrics.WorkerMetrics, podID string, logger *slog.Logger) *LifecycleHandler {
-	return &LifecycleHandler{retry: retry, dlq: dlq, store: store, metrics: m, podID: podID, logger: logger}
+// events may be nil, in which case lifecycle events are not published (used
+// by tests that don't exercise the analytics pipeline).
+func NewLifecycleHandler(retry RetryPublisher, dlq DLQPublisher, store StatusRecorder, m *metrics.WorkerMetrics, podID string, logger *slog.Logger, events EventPublisher) *LifecycleHandler {
+	return &LifecycleHandler{retry: retry, dlq: dlq, store: store, events: events, metrics: m, podID: podID, logger: logger}
 }
 
 // HandleStart marks jobID as processing and records a job_started status
@@ -153,7 +163,15 @@ func NewLifecycleHandler(retry RetryPublisher, dlq DLQPublisher, store StatusRec
 func (h *LifecycleHandler) HandleStart(ctx context.Context, jobID string) error {
 	errProcessing := h.store.MarkJobProcessing(ctx, jobID)
 	errEvent := h.store.RecordStatusEvent(ctx, jobID, "job_started", nil, h.podID)
+	h.emitEvent(ctx, queue.EventJobStarted, jobID, nil, nil, nil)
 	return errors.Join(errProcessing, errEvent)
+}
+
+// HandleRenditionCompleted publishes a rendition_completed lifecycle event
+// for renditionID of jobID. Called by the worker's processing loop once per
+// rendition, immediately after that rendition's ffmpeg invocation succeeds.
+func (h *LifecycleHandler) HandleRenditionCompleted(ctx context.Context, jobID, renditionID string) {
+	h.emitEvent(ctx, queue.EventRenditionCompleted, jobID, &renditionID, nil, nil)
 }
 
 // HandleSuccess records a job's successful completion.
@@ -161,6 +179,7 @@ func (h *LifecycleHandler) HandleSuccess(ctx context.Context, msg queue.JobMessa
 	h.metrics.IncJobCompleted()
 	errCompleted := h.store.MarkJobCompleted(ctx, msg.JobID)
 	errEvent := h.store.RecordStatusEvent(ctx, msg.JobID, "job_completed", nil, h.podID)
+	h.emitEvent(ctx, queue.EventJobCompleted, msg.JobID, nil, nil, nil)
 	return errors.Join(errCompleted, errEvent)
 }
 
@@ -180,6 +199,10 @@ func (h *LifecycleHandler) HandleFailure(ctx context.Context, msg queue.JobMessa
 		h.metrics.IncPodResourceConstrained()
 	}
 	LogJobError(h.logger, failureEventType, msg.JobID, h.podID, procErr, msg.RetryCount, class, stderrSnippet(procErr))
+
+	errClass := string(class)
+	errReason := procErr.Error()
+	h.emitEvent(ctx, queue.EventJobFailed, msg.JobID, nil, &errClass, &errReason)
 
 	if class == ErrorClassConstraint {
 		if err := h.recordEvent(ctx, msg.JobID, "pod_resource_constrained", procErr, class); err != nil {
@@ -238,6 +261,29 @@ func (h *LifecycleHandler) recordEvent(ctx context.Context, jobID, eventType str
 		"error":      procErr.Error(),
 		"error_type": string(class),
 	}, h.podID)
+}
+
+// emitEvent publishes a lifecycle event for the analytics pipeline. It is
+// fire-and-forget: a publish failure is logged and swallowed, never
+// propagated, so a lifecycle-event outage never blocks or fails job
+// processing (task 35). events is nil in tests that don't wire the
+// analytics pipeline, in which case emitEvent is a no-op.
+func (h *LifecycleHandler) emitEvent(ctx context.Context, eventType queue.LifecycleEventType, jobID string, renditionID, errorClass, errorReason *string) {
+	if h.events == nil {
+		return
+	}
+	event := queue.JobLifecycleEvent{
+		JobID:       jobID,
+		EventType:   eventType,
+		RenditionID: renditionID,
+		ErrorClass:  errorClass,
+		ErrorReason: errorReason,
+		PodID:       h.podID,
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := h.events.PublishEvent(ctx, event); err != nil {
+		LogJobError(h.logger, "lifecycle_event_publish_failed", jobID, h.podID, err, 0, "", "")
+	}
 }
 
 // stderrSnippet extracts the first 500 chars of captured ffmpeg stderr from

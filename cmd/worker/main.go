@@ -53,6 +53,11 @@ func main() {
 	dlqProducer := queue.NewDLQProducer(dlqWriter)
 	defer dlqProducer.Close()
 
+	lifecycleTopic := envOrDefault("LIFECYCLE_TOPIC", queue.LifecycleTopic)
+	lifecycleWriter := queue.NewKafkaLifecycleWriter(brokers, lifecycleTopic)
+	lifecycleProducer := queue.NewLifecycleProducer(lifecycleWriter)
+	defer lifecycleProducer.Close()
+
 	pool, err := store.Connect(ctx, os.Getenv("DB_DSN"))
 	if err != nil {
 		log.Fatalf("connect to postgres: %v", err)
@@ -63,7 +68,7 @@ func main() {
 	m := metrics.NewWorker()
 	podID := envOrDefault("HOSTNAME", "unknown")
 	logger := worker.NewLogger(os.Stderr)
-	lifecycle := worker.NewLifecycleHandler(retryProducer, dlqProducer, db, m, podID, logger)
+	lifecycle := worker.NewLifecycleHandler(retryProducer, dlqProducer, db, m, podID, logger, lifecycleProducer)
 
 	handler := &jobHandler{
 		downloader: downloader,
@@ -166,6 +171,7 @@ func (h *jobHandler) process(ctx context.Context, msg queue.JobMessage) error {
 				return err
 			}
 			h.metrics.ObserveTranscodeDuration(r.ID, time.Since(start).Seconds())
+			h.lifecycle.HandleRenditionCompleted(ctx, msg.JobID, r.ID)
 			hlsResults[r.ID] = res
 
 			segments, err := filepath.Glob(filepath.Join(filepath.Dir(res.PlaylistPath), "*.ts"))
@@ -192,6 +198,7 @@ func (h *jobHandler) process(ctx context.Context, msg queue.JobMessage) error {
 			return err
 		}
 		h.metrics.ObserveTranscodeDuration(r.ID, time.Since(start).Seconds())
+		h.lifecycle.HandleRenditionCompleted(ctx, msg.JobID, r.ID)
 		singleResults[r.ID] = res
 		outFiles = append(outFiles, storage.OutputFile{
 			LocalPath: res.FilePath,

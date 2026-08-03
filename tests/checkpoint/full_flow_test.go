@@ -444,7 +444,7 @@ func TestFullFlow_UploadThroughWorkerToStatus(t *testing.T) {
 		downloader: worker.NewDownloader(fakeSourceS3Client{}),
 		transcoder: transcoder,
 		uploader:   storage.NewOutputUploader(outputS3, "pulsegrid-output-test"),
-		lifecycle:  worker.NewLifecycleHandler(noopRetryPublisher{}, noopDLQPublisher{}, st, metrics.NewWorker(), "checkpoint-pod", worker.NewLogger(io.Discard)),
+		lifecycle:  worker.NewLifecycleHandler(noopRetryPublisher{}, noopDLQPublisher{}, st, metrics.NewWorker(), "checkpoint-pod", worker.NewLogger(io.Discard), nil),
 	}
 	consumer := worker.NewConsumer(broker, handler)
 
