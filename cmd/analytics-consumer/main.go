@@ -1,14 +1,11 @@
 // Command analytics-consumer runs the Pulsegrid analytics consumer: it
-// consumes job lifecycle events from Kafka and sinks them for the analytics
-// pipeline (task 36). Sinking to Postgres lands in a later task; today this
-// scaffold logs each event and gates the offset commit on a successful sink
-// write, so a future sink outage never silently drops an event.
+// consumes job lifecycle events from Kafka and sinks them into
+// analytics.job_lifecycle_events (task 37).
 package main
 
 import (
 	"context"
 	"log"
-	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -16,6 +13,7 @@ import (
 
 	"pulsegrid/pkg/analytics"
 	"pulsegrid/pkg/queue"
+	"pulsegrid/pkg/store"
 )
 
 func main() {
@@ -25,12 +23,29 @@ func main() {
 	brokers := strings.Split(envOrDefault("ANALYTICS_KAFKA_BROKERS", "localhost:9092"), ",")
 	groupID := envOrDefault("ANALYTICS_CONSUMER_GROUP", analytics.GroupID)
 	topic := envOrDefault("LIFECYCLE_TOPIC", queue.LifecycleTopic)
-	_ = os.Getenv("ANALYTICS_DB_DSN") // wired to the Postgres sink in task 37
+	dbDSN := os.Getenv("ANALYTICS_DB_DSN")
+
+	// Run migrations here too (not just from cmd/api): the analytics
+	// schema (migration 003) must exist before the sink can insert into
+	// it, and this consumer may start before, after, or independently of
+	// the API server. RunMigrations is idempotent (migrate.ErrNoChange is
+	// treated as success), so running it from both entrypoints is safe.
+	if err := store.RunMigrations(dbDSN); err != nil {
+		log.Fatalf("run migrations: %v", err)
+	}
+
+	pool, err := store.Connect(ctx, dbDSN)
+	if err != nil {
+		log.Fatalf("connect to postgres: %v", err)
+	}
+	defer pool.Close()
 
 	reader := queue.NewKafkaLifecycleReader(brokers, groupID, topic)
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	handler := analytics.NewLogEventHandler(logger)
-	consumer := analytics.NewConsumer(reader, handler)
+	sink := analytics.NewPostgresSink(pool)
+	consumer := analytics.NewConsumer(reader, sink)
+
+	refresher := analytics.NewRefresher(pool)
+	go refresher.RunLoop(ctx)
 
 	log.Printf("pulsegrid analytics-consumer starting: brokers=%v group=%s topic=%s", brokers, groupID, topic)
 	if err := consumer.Run(ctx); err != nil {
