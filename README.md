@@ -1,11 +1,23 @@
 # Pulsegrid
 
-Distributed video transcoding platform. Clients upload a source video and a
-list of desired output renditions; the platform transcodes them asynchronously
-via a Kafka-backed job queue and worker pool, and tracks job lifecycle events
-for analytics.
+Distributed video transcoding platform. Upload a source video and a list of
+desired output renditions; Pulsegrid transcodes them asynchronously over a
+Kafka-backed job queue and worker pool, then tracks job lifecycle events for
+analytics.
 
-## Architecture
+## Quick start
+
+```
+make build              # go build ./...
+make test               # go test ./...
+make docker-build       # build api, worker, analytics-consumer images
+```
+
+Requires Kafka, Postgres, and S3-compatible storage. Run migrations in
+`db/migrations/` (001-004, in order) against a fresh database before starting
+any service. See [Running locally](#running-locally) for required env vars.
+
+## How it works
 
 ```
                  ┌─────────────┐        ┌──────────────────┐
@@ -32,19 +44,21 @@ for analytics.
                  └───────────────┘
 ```
 
-- **API server** (`cmd/api`) — accepts uploads, writes the source to S3,
-  enqueues a job to Kafka, persists job metadata to Postgres, and serves
-  status/range/analytics queries.
-- **Worker** (`cmd/worker`) — consumes `transcoding-jobs`, downloads the
-  source from S3, runs ffmpeg per rendition (including HLS), uploads outputs
-  + manifest to S3, classifies errors (retryable / permanent / resource
-  constraint) for retry or DLQ, and publishes job lifecycle events.
-- **Analytics consumer** (`cmd/analytics-consumer`) — consumes
-  `job-lifecycle-events`, sinks them into an isolated `analytics` Postgres
-  schema, and periodically refreshes materialized views used for
-  throughput/latency/failure/rendition reporting.
-- **Load test harness** (`cmd/load-test`) — drives the API with a batch of
-  jobs and reports latency percentiles / success rate against SLOs.
+1. A client uploads a source video and desired renditions to the **API
+   server**, which stores the source in S3, writes job metadata to Postgres,
+   and enqueues a job on the `transcoding-jobs` Kafka topic.
+2. A **worker** picks up the job, downloads the source, runs ffmpeg per
+   rendition (including HLS), and uploads outputs + manifest to S3. Errors
+   are classified as retryable, permanent, or resource-constraint, driving
+   retry or dead-letter-queue handling. Each state transition is published
+   to the `job-lifecycle-events` topic.
+3. The **analytics consumer** reads that topic, sinks events into an
+   isolated `analytics` Postgres schema, and periodically refreshes
+   materialized views for throughput/latency/failure/rendition reporting —
+   served back through the API's `/analytics/summary` endpoint.
+
+A **load test harness** (`cmd/load-test`) drives the API with a batch of
+jobs and reports latency percentiles / success rate against SLOs.
 
 Design and requirements detail lives in `.spec/` (`design.md`,
 `requirements.md`, `tasks.md`, `CHANGELOG.md`).
@@ -65,25 +79,12 @@ pkg/
   store/                Postgres access (jobs, status events)
   storage/              S3 client
   metrics/              Prometheus metric definitions
+  errors.go, retry.go, types.go   Shared error types, retry policy, domain types
 db/migrations/          SQL migrations (jobs, status events, analytics schema/views)
 kube/                   Kubernetes manifests (Deployments, KEDA ScaledObject, RBAC)
 terraform/              EKS/RDS/S3/VPC infrastructure
 monitoring/             Grafana dashboard + Prometheus alert rules
 tests/                  Checkpoint and integration tests
-```
-
-## Building and testing
-
-```
-make build   # go build ./...
-make test    # go test ./...
-```
-
-Docker images:
-
-```
-make docker-build   # builds api, worker, analytics-consumer images
-make docker-push
 ```
 
 ## Running locally
@@ -122,9 +123,6 @@ Routes: `POST /videos/upload`, `GET /jobs/{job_id}`, `GET /jobs`,
 | `ANALYTICS_KAFKA_BROKERS` | `localhost:9092` | comma-separated broker list |
 | `ANALYTICS_CONSUMER_GROUP` | `pulsegrid-analytics` | Kafka consumer group |
 | `LIFECYCLE_TOPIC` | `job-lifecycle-events` | lifecycle event topic |
-
-Run migrations in `db/migrations/` in order (001–004) before starting any
-service against a fresh database.
 
 ## Deployment
 
