@@ -1,0 +1,74 @@
+# Single replica, no KEDA/HPA (task 42's own text: "consumer group rebalance
+# handles failover" — if this pod dies, a Kubernetes restart is all that's
+# needed, the Kafka consumer group re-assigns partitions to whichever
+# replica comes back up). Sized as a lightweight sink (100m/128Mi requests,
+# per task 42), not a compute-heavy worker.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pulsegrid-analytics-consumer
+  namespace: pulsegrid
+  labels:
+    app: pulsegrid-analytics-consumer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pulsegrid-analytics-consumer
+  template:
+    metadata:
+      labels:
+        app: pulsegrid-analytics-consumer
+    spec:
+      serviceAccountName: pulsegrid-analytics-consumer
+      containers:
+      - name: analytics-consumer
+        image: pulsegrid/pulsegrid-analytics-consumer:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: metrics
+          containerPort: 8082
+        envFrom:
+        - configMapRef:
+            name: pulsegrid-config
+        env:
+        - name: ANALYTICS_DB_DSN
+          valueFrom:
+            secretKeyRef:
+              name: pulsegrid-db
+              key: DB_DSN
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: metrics
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: metrics
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pulsegrid-analytics-consumer
+  namespace: pulsegrid
+  labels:
+    app: pulsegrid-analytics-consumer
+spec:
+  selector:
+    app: pulsegrid-analytics-consumer
+  ports:
+  - name: metrics
+    port: 8082
+    targetPort: 8082
+  type: ClusterIP

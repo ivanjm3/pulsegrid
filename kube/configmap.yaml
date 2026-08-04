@@ -14,3 +14,8 @@ data:
   S3_BUCKET_SOURCE: "pulsegrid-source"
   S3_BUCKET_OUTPUT: "pulsegrid-output"
   AWS_REGION: "us-east-1"
+  # Analytics consumer (task 42) — same in-cluster Kafka as KAFKA_BROKERS
+  # above, just under the env var name cmd/analytics-consumer/main.go reads.
+  ANALYTICS_KAFKA_BROKERS: "kafka-0.kafka.pulsegrid.svc.cluster.local:9092"
+  ANALYTICS_CONSUMER_GROUP: "pulsegrid-analytics"
+  LIFECYCLE_TOPIC: "job-lifecycle-events"

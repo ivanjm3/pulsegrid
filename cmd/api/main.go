@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
+	"pulsegrid/pkg/analytics"
 	"pulsegrid/pkg/api"
 	"pulsegrid/pkg/metrics"
 	"pulsegrid/pkg/queue"
@@ -63,6 +64,9 @@ func main() {
 	bucketPinger := storage.NewBucketPinger(s3Client, sourceBucket)
 	healthHandler := api.NewHealthHandler(kafkaPinger, pool, bucketPinger)
 
+	analyticsQueries := analytics.NewQueries(pool)
+	analyticsSummaryHandler := api.NewAnalyticsSummaryHandler(analyticsQueries, analyticsQueries, analyticsQueries, analyticsQueries)
+
 	go pollQueueDepth(ctx, brokers, m)
 
 	mux := http.NewServeMux()
@@ -70,6 +74,7 @@ func main() {
 	mux.Handle("GET /jobs/{job_id}", statusHandler)
 	mux.Handle("GET /jobs", jobsListHandler)
 	mux.Handle("GET /health", healthHandler)
+	mux.Handle("GET /analytics/summary", analyticsSummaryHandler)
 
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("GET /metrics", m.Handler())

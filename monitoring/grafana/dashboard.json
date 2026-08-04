@@ -15,6 +15,14 @@
         "query": "prometheus",
         "label": "Prometheus",
         "current": {}
+      },
+      {
+        "name": "DS_POSTGRES",
+        "type": "datasource",
+        "query": "postgres",
+        "label": "Postgres (analytics schema)",
+        "description": "Points at the same free-tier RDS instance tasks 5/25/30 already provision (see terraform/main.tf) — the four panels below query the analytics.v_* materialized views (task 38), not a new datasource or database.",
+        "current": {}
       }
     ]
   },
@@ -171,6 +179,78 @@
           "legendFormat": "{{rendition}}",
           "format": "table",
           "instant": true
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Analytics",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
+      "panels": []
+    },
+    {
+      "id": 12,
+      "title": "Throughput Trend — Jobs Completed / Minute (24h)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 31 },
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "description": "Sourced from analytics.v_throughput_per_minute (task 38), refreshed every 60s by the analytics-consumer's background goroutine (pkg/analytics/views.go).",
+      "targets": [
+        {
+          "format": "time_series",
+          "rawSql": "SELECT minute AS time, jobs_completed FROM analytics.v_throughput_per_minute ORDER BY minute",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 13,
+      "title": "Latency Percentiles by Hour (7d)",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 31 },
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "description": "Sourced from analytics.v_latency_percentiles (task 38): per-hour p50/p95/p99 job_started-to-job_completed duration, paired by job_id.",
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT hour, p50, p95, p99 FROM analytics.v_latency_percentiles ORDER BY hour",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 14,
+      "title": "Failure Rate by Error Class (24h)",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 39 },
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "description": "Sourced from analytics.v_failure_rate_by_class (task 38): stacked per-hour failure counts and rates, broken out by error_class (retryable|permanent|constraint|null).",
+      "options": { "stacking": "normal" },
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT hour, error_class, failure_count, failure_rate_pct FROM analytics.v_failure_rate_by_class ORDER BY hour, error_class",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 15,
+      "title": "Rendition Breakdown (24h)",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 39 },
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "description": "Sourced from analytics.v_rendition_breakdown (task 38). failed_count is a single account-wide 24h job-failure count repeated on every row, not a per-rendition figure — job_failed events carry a null rendition_id (task 35's schema), so failures were never attributable to one specific rendition; see migration 004's header comment and the CHANGELOG's task 37/38 entry for the full reasoning.",
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT rendition_id, completed_count, failed_count, avg_duration_seconds FROM analytics.v_rendition_breakdown ORDER BY rendition_id",
+          "refId": "A"
         }
       ]
     }

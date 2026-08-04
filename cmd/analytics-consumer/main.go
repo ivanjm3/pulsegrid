@@ -6,12 +6,14 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 
 	"pulsegrid/pkg/analytics"
+	"pulsegrid/pkg/metrics"
 	"pulsegrid/pkg/queue"
 	"pulsegrid/pkg/store"
 )
@@ -42,10 +44,25 @@ func main() {
 
 	reader := queue.NewKafkaLifecycleReader(brokers, groupID, topic)
 	sink := analytics.NewPostgresSink(pool)
-	consumer := analytics.NewConsumer(reader, sink)
+	m := metrics.NewAnalytics()
+	consumer := analytics.NewConsumer(reader, sink, m)
 
 	refresher := analytics.NewRefresher(pool)
 	go refresher.RunLoop(ctx)
+
+	kafkaPinger := &queue.Pinger{Brokers: brokers}
+	healthHandler := analytics.NewHealthHandler(kafkaPinger, pool)
+
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("GET /metrics", m.Handler())
+	metricsMux.Handle("GET /health", healthHandler)
+	go func() {
+		const metricsAddr = ":8082"
+		log.Printf("pulsegrid analytics-consumer metrics/health listening on %s", metricsAddr)
+		if err := http.ListenAndServe(metricsAddr, metricsMux); err != nil {
+			log.Fatal(err)
+		}
+	}()
 
 	log.Printf("pulsegrid analytics-consumer starting: brokers=%v group=%s topic=%s", brokers, groupID, topic)
 	if err := consumer.Run(ctx); err != nil {

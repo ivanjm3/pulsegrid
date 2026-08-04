@@ -44,3 +44,15 @@ subjects:
 - kind: ServiceAccount
   name: pulsegrid-worker
   namespace: pulsegrid
+---
+# No eks.amazonaws.com/role-arn annotation here, unlike pulsegrid-api/
+# pulsegrid-worker above: the analytics-consumer (task 42) never calls S3 or
+# any other AWS API directly — it only talks to in-cluster Kafka and the RDS
+# Postgres instance (network + password auth via the pulsegrid-db Secret,
+# not IAM). Adding an unused IRSA role would be one more free-tier-irrelevant
+# AWS resource for no benefit.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pulsegrid-analytics-consumer
+  namespace: pulsegrid
